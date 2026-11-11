@@ -1,7 +1,7 @@
 // DiskEngine's file channels: OPEN #n,"f:name"[,"mode"[,reclen]] and what
 // goes through them (PRINT #, INPUT #, LIST #, INKEY$ #, CAT #, RESTORE #,
 // CLOSE #). See include/DiskEngine.h, and DISK_PROPOSAL.md in the
-// ts2068-2350 repository; the rules are TS-Pico's (its spec, section 4).
+// ts2068-esp32 repository; the rules are TS-Pico's (its spec, section 4).
 //
 // A channel is a stream (TAB n is byte n) or, given a record length, a
 // record file (TAB n is record n, 1-based). Text mode, the default, writes

@@ -4,7 +4,7 @@ ESP2068 -- TS2068 port of ESPectrum
 
 DiskEngine.h -- native disk for the TS2068: the engine behind the DOS
 ROM's service calls. New for this port. See DISK_PROPOSAL.md in the
-ts2068-2350 repository for the design, and dos/dos.asm for the ROM side.
+ts2068-esp32 repository for the design, and dos/dos.asm for the ROM side.
 
 The ROM side is the stock HOME ROM with a few patches (include/DosRom.h)
 and a 16K DOS ROM the emulator overlays on Z80 0000h-3FFFh while the
