@@ -98,7 +98,18 @@ enum vmodeproperties {
 // target for REV1). PLAN.md's risk register already flags this as needing
 // real bench time before trusting it on hardware — this is a mathematically
 // self-consistent starting point for that bench pass, not a substitute for it.
-#define VgaMode_512x480_60_TS2068 { 13, 77, 38, 512, 10, 2, 33, 480, 2, 1, 1, 83,14,6,3,6,3 }
+//
+// Superseded on hardware (2026-11-11, Olimex ESP32-SBC-FabGL): with 512
+// active columns the monitor stretches the picture across its full width,
+// leaving no side border and a 1.25x-wide aspect. The mode is now 640
+// active: VgaMode_320x240_60_TK with every horizontal figure doubled
+// (16,96,48,640 on an 800-clock line, so the same proven ~31425 Hz line
+// rate) and the pixel clock doubled to ~25.14 MHz by halving the APLL
+// divider (r1odiv 6 -> 2, i.e. 2*(odiv+2) = 16 -> 8; r0odiv likewise).
+// That is standard 640x480 VGA timing within 0.1%. The 2068's 320x240
+// frame (32-pixel side borders, 24-line top/bottom) maps onto it at 2x:
+// standard mode pixel-doubles, hi-res is 1:1, each with 64-pixel borders.
+#define VgaMode_640x480_60_TS2068 { 16, 96, 48, 640, 10, 2, 33, 480, 2, 1, 1, 83,14,6,2,6,2 }
 
 const unsigned short int vidmodes[30][17]={
 	VgaMode_320x240, VgaMode_320x240_scanlines, VgaMode_360x200, VgaMode_360x200_scanlines,
@@ -108,7 +119,7 @@ const unsigned short int vidmodes[30][17]={
 	VgaMode_320x240_50_128, VgaMode_320x240_50_128_scanlines, VgaMode_360x200_50_128, VgaMode_360x200_50_128_scanlines,
 	VgaMode_320x240_50_PENTAGON , VgaMode_320x240_50_PENTAGON_scanlines, VgaMode_360x200_50_PENTAGON, VgaMode_360x200_50_PENTAGON_scanlines,
 	CrtMode_352x272_TV_48 ,	CrtMode_352x272_TV_TK50 , CrtMode_352x224_TV_TK60 ,	CrtMode_352x272_TV_128,	CrtMode_352x272_TV_PENTAGON,
-	VgaMode_512x480_60_TS2068
+	VgaMode_640x480_60_TS2068
 };
 
 // Index of the TS2068 mode above within vidmodes[] — SCLD_VGA_MODE_INDEX,

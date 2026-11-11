@@ -44,6 +44,9 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "MemESP.h"
 #include "SCLD.h"
 #include "RomLoader.h"
+#ifdef ESP2068_SERIAL_KEYS
+#include "SerialKeys.h"
+#endif
 #include "cpuESP.h"
 #include "Video.h"
 #include "messages.h"
@@ -651,6 +654,10 @@ void ESPectrum::setup() {
         }
 
     }
+
+#ifdef ESP2068_SERIAL_KEYS
+    SerialKeys::init();
+#endif
 
     if (ps2mouse) {
         printf("Mouse detected\n");
@@ -1284,6 +1291,10 @@ static uint8_t PS2cols[8] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 IRAM_ATTR void ESPectrum::processKeyboard() {
 
     bool r = false;
+
+#ifdef ESP2068_SERIAL_KEYS
+    SerialKeys::frame(PS2Controller.keyboard(), elapsed);
+#endif
 
     // while (Mouse->availableStatus()) {
 
@@ -2082,7 +2093,13 @@ for(;;) {
     // Send audioBuffer to pwmaudio
     xQueueSend(audioTaskQueue, &param, portMAX_DELAY);
 
+#ifdef ESP2068_SERIAL_KEYS
+    int64_t cpuStart = esp_timer_get_time();
     CPU::loop();
+    SerialKeys::cpuUs = esp_timer_get_time() - cpuStart;
+#else
+    CPU::loop();
+#endif
 
     // Copy audio buffer vars for finish buffer code
     faudbufcntover = audbufcntover;

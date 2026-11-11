@@ -191,7 +191,7 @@ void VIDEO::vgataskinit(void *unused) {
 
     if (Config::arch == "2068") {
 
-        // TS2068 always uses its one fixed 512-active-column mode (see
+        // TS2068 always uses its one fixed 640-active-column mode (see
         // TS2068-ESPECTRUM-PORT-PLAN.md's "Display" section) -- it does
         // not participate in the aspect-ratio/scanlines/CRT selection
         // below, which is Spectrum/TK/Pentagon-specific.
@@ -1077,7 +1077,8 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
     const int fbTop = 24;
     const int fbActive = 192;
     const int fbBottom = 24;
-    const int hRes = 512;
+    const int hRes = 640;
+    const int hBorder = 64; // 32 2068 pixels each side; a multiple of 4 keeps x ^ 2 within a word
 
     uint8_t borderByte = zxColor(borderColor, 0);
 
@@ -1099,7 +1100,9 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
     // pixel x lives at byte x ^ 2 (as in GraphicsR2G2B2S2Swapped::dot()).
     for (int row = 0; row < fbActive; row++) {
 
-        uint8_t* out = vga.frameBuffer[fbTop + row];
+        memset(vga.frameBuffer[fbTop + row], borderByte, hBorder);
+        memset(vga.frameBuffer[fbTop + row] + hBorder + 512, borderByte, hRes - hBorder - 512);
+        uint8_t* out = vga.frameBuffer[fbTop + row] + hBorder;
 
         if (hires) {
 

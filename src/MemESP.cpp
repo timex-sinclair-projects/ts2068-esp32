@@ -80,11 +80,14 @@ bool MemESP::Init() {
 
         printf("MemESP::Init(): PSRAM detected, using PSRAM\n");
 
-        // 48K and video pages in SRAM (faster)
-        MemESP::ram[0] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), MALLOC_CAP_8BIT);
-        MemESP::ram[2] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), MALLOC_CAP_8BIT);
-        MemESP::ram[5] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), MALLOC_CAP_8BIT);
-        MemESP::ram[7] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), MALLOC_CAP_8BIT);
+        // 48K and video pages in SRAM (faster). The TS2068 runs from the
+        // SCLD's own memory and doesn't use these, while its 640-wide VGA
+        // mode needs the internal RAM, so in 2068 mode they go to PSRAM.
+        uint32_t caps = Config::arch == "2068" ? MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM : MALLOC_CAP_8BIT;
+        MemESP::ram[0] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), caps);
+        MemESP::ram[2] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), caps);
+        MemESP::ram[5] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), caps);
+        MemESP::ram[7] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), caps);
 
         // All in PSRAM
         // MemESP::ram[0] = (unsigned char *) heap_caps_calloc(0x4000, sizeof(unsigned char), MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
