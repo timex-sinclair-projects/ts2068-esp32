@@ -51,15 +51,25 @@ SVC_CAT_CHAR    EQU $02            ; A = the listing's next character, 0 at the 
 SVC_TAPE_NAME   EQU $03            ; DE/BC the name SLVM popped; (TADDR) the command
 SVC_R_TAPE      EQU $04            ; (SP) = the caller's AF, IX, DE: R_TAPE's
 SVC_W_TAPE      EQU $05            ; (SP) = the caller's AF, IX, DE: W_TAPE's
-SVC_TAPE_MOUNTED EQU $06           ; A = 1 if a TAP is mounted
+SVC_TAPE_OURS   EQU $06            ; A = 1 if SAVE goes to the engine (a TAP or a file)
 SVC_CLOSE_ALL   EQU $07            ; CLOSE #*: unmount the TAP
 SVC_FORMAT      EQU $08            ; DE/BC: a new TAP, mounted
+SVC_REPLACE     EQU $09            ; L = 1: Y to "Replace?", 0: N (the answer: D)
 
-; Answers of the tape services, below the report codes (all 3 or more).
-T_NOT_OURS      EQU 0              ; nothing mounted: the stock routine runs
+; Answers of the tape services, below the report codes (all 4 or more).
+T_NOT_OURS      EQU 0              ; the stock routine runs
 T_DONE          EQU 1              ; R_TAPE: loaded (carry); TAPE_NAME: a TAP was
                                    ;   mounted, load from its start (the name goes)
 T_FAILED        EQU 2              ; R_TAPE: no carry, as a tape error
+T_NATIVE        EQU 2              ; TAPE_NAME: a native file; the name SLVM is to
+                                   ;   use is NAME_LEN bytes at NAME_BUF
+T_ASK           EQU 3              ; TAPE_NAME: the same, once PROMPT_BUF (the
+                                   ;   question, 0-ended) is answered Y
+
+; Where the engine leaves things for the hooks (5CCCh-5EE9h is free).
+NAME_LEN        EQU $5E0F
+NAME_BUF        EQU $5E10          ; 10 bytes
+PROMPT_BUF      EQU $5E20          ; up to 64 bytes and a 0
 
 ; --- RST 8 codes (the report is code + 1) --------------------------------------
 R_NONSENSE      EQU $0B            ; C Nonsense in BASIC
@@ -89,7 +99,8 @@ H_EXPT_STR      EQU $1BEF          ; HOME: class 0Ah, a string expression
 ; The EXROM (SIDE=2).
 X_ERROR         EQU $0010          ; EXROM: XRST8 after it has fetched the code:
                                    ;   LD (IY+0),L / LD SP,(ERRSP) / back to HOME
-X_CALL_BANK     EQU $0F99          ; EXROM: CALL BANK
+X_CALL_BANK     EQU $0F99          ; EXROM: CALL BANK, with a frame (the HOME routine,
+                                   ;   FF00h, 0, 0) pushed; A, BC, DE, HL go through
 X_SLVM_RET      EQU $0218          ; SLVM after CALL BANK PGPSTR: POP IX ...
 X_R_TAPE_3      EQU $00FF          ; R_TAPE after INC D / EX AF,AF' / DEC D
 X_W_TAPE_3      EQU $006B          ; W_TAPE after LD HL,00E5h
@@ -167,9 +178,29 @@ H_JP_HL:
 
         ORG     HOOKS
 
-; X_PGPSTR -- SLVM's CALL BANK PGPSTR at 0215h calls here instead. The name
-; goes to the engine, which may mount a TAP (LOAD "game.tap": the name then
-; goes, so the LOAD takes the TAP's first program) or refuse the command.
+; HOMECALLX -- call a HOME routine from the EXROM, the way the EXROM does
+; (SAVE's CHAN-OPEN at 0857h): the routine's address goes in a CALL BANK frame.
+        MACRO   HOMECALLX addr
+        push    ix
+        exx
+        ld      hl,addr
+        push    hl
+        ld      hl,$FF00           ; HOME, no horizontal select
+        push    hl
+        ld      hl,0
+        push    hl
+        push    hl
+        exx
+        call    X_CALL_BANK
+        pop     ix
+        ENDM
+
+; X_PGPSTR -- SLVM's CALL BANK PGPSTR at 0215h calls here instead (run time
+; only: SLVM skips it on the syntax pass). The name goes to the engine, which
+; may mount a TAP (LOAD "game.tap": the name then goes, so the LOAD takes the
+; TAP's first program), take a native file (SLVM then gets the name the
+; engine left at NAME_BUF: for SAVE the tape header's, for LOAD none), ask
+; first ("Replace?"), or refuse the command.
 X_PGPSTR:
         inc     sp
         inc     sp                 ; drop the return to 0218h: CALL BANK reads the
@@ -178,15 +209,62 @@ X_PGPSTR:
         push    af
         ld      a,SVC_TAPE_NAME
         out     (P_SVC),a
+        and     a
+        jr      z,.go              ; T_NOT_OURS
         cp      T_DONE
         jr      z,.noname
-        and     a
+        cp      T_NATIVE
+        jr      z,.native
+        cp      T_ASK
         jr      nz,X_REPORT
+        call    X_ASK              ; Y, or a report
+.native:
+        ld      de,NAME_BUF
+        ld      a,(NAME_LEN)
+        ld      c,a
+        ld      b,0
         jr      .go
 .noname:
         ld      bc,0               ; LOAD "": the first program on the TAP
 .go:    pop     af
         jp      X_SLVM_RET
+
+; X_ASK -- print the question at PROMPT_BUF on the lower screen and wait for
+; Y or N (SPACE is N too). The engine hears the answer; N is its report.
+X_ASK:  ld      a,$FD              ; the lower screen
+        HOMECALLX H_CHAN_OPEN
+        ld      hl,PROMPT_BUF
+.print: ld      a,(hl)
+        and     a
+        jr      z,.keys
+        push    hl
+        HOMECALLX H_PRINT_A
+        pop     hl
+        inc     hl
+        jr      .print
+.keys:  set     5,(iy+2)           ; TV_FLAG: clear the lower screen next time
+.up:    xor     a                  ; wait until no key is down
+        in      a,($FE)
+        and     $1F
+        cp      $1F
+        jr      nz,.up
+.down:  ld      a,$DF              ; Y: row P-Y, bit 4
+        in      a,($FE)
+        bit     4,a
+        ld      l,1
+        jr      z,.answer
+        ld      a,$7F              ; N: row SPACE-B, bit 3; SPACE bit 0
+        in      a,($FE)
+        and     $09
+        cp      $09
+        jr      z,.down
+        ld      l,0
+.answer:
+        ld      a,SVC_REPLACE
+        out     (P_SVC),a
+        and     a
+        ret     z
+        jr      X_REPORT
 
 ; X_REPORT -- raise the report whose code is in A, from the EXROM.
 X_REPORT:
@@ -208,7 +286,7 @@ X_R_TAPE:
         inc     sp
         inc     sp                 ; drop the AF
         cp      3
-        jr      nc,X_REPORT        ; not on the TAP: F
+        jp      nc,X_REPORT        ; not on the TAP: F
         rra                        ; T_DONE: carry; T_FAILED: none
         ret
 .stock: pop     af
@@ -227,16 +305,16 @@ X_W_TAPE:
         inc     sp
         inc     sp
         cp      3
-        jr      nc,X_REPORT
+        jp      nc,X_REPORT
         ret
 .stock: pop     af
         ld      hl,$00E5           ; W_TAPE's first instruction
         jp      X_W_TAPE_3
 
 ; X_SAVE -- SAVE (0851h) jumps here. HL = the data, IX = the header. With a
-; TAP mounted: no "Start tape, then press any key", no second's pause, the
-; header and the data straight onto the TAP.
-X_SAVE: ld      a,SVC_TAPE_MOUNTED
+; TAP mounted or a native file: no "Start tape, then press any key", no
+; second's pause, the header and the data straight to the engine.
+X_SAVE: ld      a,SVC_TAPE_OURS
         out     (P_SVC),a
         and     a
         jr      nz,.tap

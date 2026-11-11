@@ -70,7 +70,16 @@ bool equalNoCase(const std::string& a, const std::string& b) {
 const uint16_t FLAGS = 0x5C3B;     // bit 7 set: run time
 const uint16_t T_ADDR = 0x5C74;    // after SLVM: 0 SAVE, 1 LOAD, 2 VERIFY, 3 MERGE
 
+const uint16_t CH_ADD = 0x5C5D;    // the next character of the BASIC line
+
+const uint8_t TOK_SCREEN = 0xAA, TOK_CODE = 0xAF, TOK_DATA = 0xE4;
+
 const char* const HEADER_TYPES[4] = {"Prog", "Num()", "Chr()", "Code"};
+
+const size_t PLUS3_LEN = 128;
+const char PLUS3_SIG[] = "PLUS3DOS\x1a";
+const long SCREEN_LEN = 6912;
+const uint16_t SCREEN_ADDR = 16384;
 
 } // namespace
 
@@ -81,6 +90,7 @@ void DiskEngine::reset() {
     listing_.clear();
     listingPos_ = 0;
     unmount();
+    dropNative();
 }
 
 bool DiskEngine::resolve(const std::string& name, std::string& path2068) const {
@@ -162,6 +172,22 @@ std::string DiskEngine::hostPath(const std::string& path2068) const {
     return p;
 }
 
+// What CAT shows in a file's type column: the +3DOS header's type, Scr for
+// a raw screen, TAP, or nothing.
+const char* DiskEngine::kindOf(const std::string& host, long size) {
+    if (endsWithNoCase(host, ".tap")) return "TAP";
+    if (size < (long) PLUS3_LEN && size != SCREEN_LEN) return "";
+    uint8_t head[PLUS3_LEN];
+    FILE* f = fopen(host.c_str(), "rb");
+    if (!f) return "";
+    size_t got = fread(head, 1, sizeof head, f);
+    fclose(f);
+    FileInfo info;
+    if (!describe(head, got, size, info)) return "";
+    if (info.dataOffset == 0) return "Scr";
+    return info.type < 4 ? HEADER_TYPES[info.type] : "?";
+}
+
 uint8_t DiskEngine::buildListing(const std::string& folder, std::string& out) {
     out.clear();
     std::string host = hostPath(folder);
@@ -210,7 +236,8 @@ uint8_t DiskEngine::buildListing(const std::string& folder, std::string& out) {
             files++;
             std::string path = folder + (folder.back() == '/' ? "" : "/") + (base + e.name);
             char mark = (!tap_.empty() && equalNoCase(path, tap_)) ? '>' : ' ';
-            snprintf(line, sizeof line, "%3d%c%-20s %6s", files, mark, fit(name, 20).c_str(), sizeText(e.size).c_str());
+            snprintf(line, sizeof line, "%3d%c%-14s %-5s %6s", files, mark, fit(name, 14).c_str(),
+                     kindOf(host + "/" + (base + e.name), e.size), sizeText(e.size).c_str());
             out += line;
             out += "\r";
         }
@@ -287,8 +314,62 @@ uint8_t DiskEngine::catOpen(DiskCpu& cpu) {
     return R_NAME;
 }
 
+void DiskEngine::dropNative() {
+    native_ = N_NONE;
+    nativePath_.clear();
+    nativeBlocks_.clear();
+    nativePos_ = 0;
+    saveHeader_.clear();
+}
+
+bool DiskEngine::describe(const uint8_t* head, size_t headLen, long size, FileInfo& out) {
+    if (headLen >= PLUS3_LEN && memcmp(head, PLUS3_SIG, 9) == 0) {
+        uint8_t sum = 0;
+        for (int i = 0; i < 127; i++) sum += head[i];
+        if (sum == head[127]) {
+            out.type = head[15];
+            out.length = head[16] | (head[17] << 8);
+            out.param1 = head[18] | (head[19] << 8);
+            out.param2 = head[20] | (head[21] << 8);
+            out.dataOffset = PLUS3_LEN;
+            return (long) PLUS3_LEN + out.length <= size;   // not cut short
+        }
+    }
+    if (size == SCREEN_LEN) {
+        out = {3, (uint16_t) SCREEN_LEN, SCREEN_ADDR, 32768, 0};
+        return true;
+    }
+    return false;
+}
+
+std::string DiskEngine::plus3Header(uint8_t type, uint16_t length, uint16_t param1, uint16_t param2) {
+    std::string h(PLUS3_LEN, '\0');
+    memcpy(&h[0], PLUS3_SIG, 9);
+    h[9] = 1;                                           // issue 1, version 0
+    uint32_t total = PLUS3_LEN + length;
+    for (int i = 0; i < 4; i++) h[11 + i] = (char) ((total >> (8 * i)) & 0xFF);
+    h[15] = (char) type;
+    uint16_t f[3] = {length, param1, param2};
+    for (int i = 0; i < 3; i++) {
+        h[16 + 2 * i] = (char) (f[i] & 0xFF);
+        h[17 + 2 * i] = (char) (f[i] >> 8);
+    }
+    uint8_t sum = 0;
+    for (int i = 0; i < 127; i++) sum += (uint8_t) h[i];
+    h[127] = (char) sum;
+    return h;
+}
+
+std::string DiskEngine::tapeNameOf(const std::string& path) {
+    std::string base = path.substr(path.rfind('/') + 1);
+    size_t dot = base.rfind('.');
+    if (dot != std::string::npos && dot > 0) base = base.substr(0, dot);
+    return base.substr(0, 10);
+}
+
 uint8_t DiskEngine::tapeName(DiskCpu& cpu) {
     examined_ = 0;
+    dropNative();
     if (!(cpu.peek(FLAGS) & 0x80)) return T_NOT_OURS;   // the syntax pass
     uint8_t command = cpu.peek(T_ADDR);
     std::string name = text(cpu), path;
@@ -301,17 +382,151 @@ uint8_t DiskEngine::tapeName(DiskCpu& cpu) {
             return r == OK ? T_DONE : r;
         }
     }
-    // With a TAP mounted, everything goes to it; without one, the stock
-    // tape routines run (the emulator's tape player).
+    // With a TAP mounted, everything goes to it; without one, to a native
+    // file.
+    if (!tap_.empty()) return T_NOT_OURS;
+    if (command == 0) return saveNative(cpu, name);
+    if (command <= 3) return loadNative(cpu, command, name);
     return T_NOT_OURS;
 }
 
+uint8_t DiskEngine::loadNative(DiskCpu& cpu, uint8_t command, const std::string& name) {
+    if (name.empty()) return R_IO;                      // LOAD "": no tape (the file picker, later)
+    std::string path;
+    if (!resolve(name, path)) return R_NAME;
+    std::string host = hostPath(path);
+    struct stat st;
+    if (stat(host.c_str(), &st) != 0) return R_NAME;
+    if (S_ISDIR(st.st_mode)) return R_PARAM;
+
+    // What the statement wants: the token after the name (SLVM hasn't
+    // looked at it yet).
+    uint16_t at = cpu.peek(CH_ADD) | (cpu.peek(CH_ADD + 1) << 8);
+    uint8_t token = cpu.peek(at);
+    for (int i = 0; i < 64 && token == ' '; i++) token = cpu.peek(++at);
+    enum { PROGRAM, BYTES, ARRAY } want = PROGRAM;
+    if (token == TOK_CODE || token == TOK_SCREEN) want = BYTES;
+    else if (token == TOK_DATA) want = ARRAY;
+
+    FILE* f = fopen(host.c_str(), "rb");
+    if (!f) return R_IO;
+    uint8_t head[PLUS3_LEN];
+    size_t got = fread(head, 1, sizeof head, f);
+    FileInfo info;
+    if (!describe(head, got, (long) st.st_size, info)) {
+        // A file made elsewhere: as CODE it loads whole, at the statement's
+        // address (32768 if it gives none).
+        if (want != BYTES || st.st_size <= 0 || st.st_size > 0xFFFF) { fclose(f); return R_NAME; }
+        info = {3, (uint16_t) st.st_size, 32768, 32768, 0};
+    }
+    if (command == 3) want = PROGRAM;                   // MERGE: a program, always
+    bool fits = (want == PROGRAM && info.type == 0) || (want == BYTES && info.type == 3)
+                || (want == ARRAY && (info.type == 1 || info.type == 2));
+    if (!fits) { fclose(f); return R_PARAM; }
+
+    std::string data(info.length + 2, '\0');
+    data[0] = (char) 0xFF;
+    bool ok = fseek(f, info.dataOffset, SEEK_SET) == 0
+              && fread(&data[1], 1, info.length, f) == info.length;
+    fclose(f);
+    if (!ok) return R_IO;
+    uint8_t x = 0xFF;
+    for (size_t i = 1; i <= info.length; i++) x ^= (uint8_t) data[i];
+    data[info.length + 1] = (char) x;
+
+    std::string h(19, '\0');
+    h[1] = (char) info.type;
+    std::string tn = tapeNameOf(path);
+    tn.resize(10, ' ');
+    memcpy(&h[2], tn.data(), 10);
+    uint16_t fld[3] = {info.length, info.param1, info.param2};
+    for (int i = 0; i < 3; i++) {
+        h[12 + 2 * i] = (char) (fld[i] & 0xFF);
+        h[13 + 2 * i] = (char) (fld[i] >> 8);
+    }
+    x = 0;
+    for (int i = 0; i < 18; i++) x ^= (uint8_t) h[i];
+    h[18] = (char) x;
+
+    nativeBlocks_ = {h, data};
+    nativePos_ = 0;
+    nativePath_ = path;
+    native_ = N_LOAD;
+    cpu.poke(NAME_LEN, 0);                              // any name: the one block there is
+    return T_NATIVE;
+}
+
+uint8_t DiskEngine::saveNative(DiskCpu& cpu, const std::string& name) {
+    std::string path;
+    if (name.empty() || name.back() == '/' || endsWithNoCase(name, ".tap")) return R_NAME;
+    if (!resolve(name, path) || path == "/") return R_NAME;
+    struct stat st;
+    std::string folder = path.substr(0, path.rfind('/'));
+    if (!folder.empty() && (stat(hostPath(folder).c_str(), &st) != 0 || !S_ISDIR(st.st_mode))) return R_NAME;
+    bool exists = stat(hostPath(path).c_str(), &st) == 0;
+    if (exists && S_ISDIR(st.st_mode)) return R_PARAM;
+
+    std::string base = path.substr(path.rfind('/') + 1);
+    std::string tn = tapeNameOf(path);
+    if (tn.empty()) tn = base.substr(0, 10);
+    for (size_t i = 0; i < tn.size(); i++) cpu.poke(NAME_BUF + i, (uint8_t) tn[i]);
+    cpu.poke(NAME_LEN, (uint8_t) tn.size());
+    nativePath_ = path;
+    if (!exists) {
+        native_ = N_SAVE;
+        return T_NATIVE;
+    }
+    // "Replace name? (Y/N)" on one line of the lower screen.
+    std::string q = "Replace " + fit(printable(base), 16) + "? (Y/N)";
+    for (size_t i = 0; i < q.size(); i++) cpu.poke(PROMPT_BUF + i, (uint8_t) q[i]);
+    cpu.poke(PROMPT_BUF + q.size(), 0);
+    native_ = N_ASK;
+    return T_ASK;
+}
+
+uint8_t DiskEngine::replace(DiskCpu& cpu) {
+    if (native_ != N_ASK) return R_NONSENSE;
+    if ((cpu.hl() & 0xFF) == 1) {
+        native_ = N_SAVE;
+        return OK;
+    }
+    dropNative();
+    return R_BREAK;
+}
+
+uint8_t DiskEngine::serve(DiskCpu& cpu, const uint8_t* block, size_t len, bool load, uint16_t ix, uint16_t de) {
+    // block: flag, data, checksum.
+    if (len != (size_t) de + 2) return T_FAILED;
+    uint8_t x = 0;
+    for (size_t i = 0; i < len; i++) x ^= block[i];
+    if (x != 0) return T_FAILED;
+    for (uint16_t i = 0; i < de; i++) {
+        uint8_t c = block[1 + i];
+        if (load) cpu.poke(ix + i, c);
+        else if (cpu.peek(ix + i) != c) return T_FAILED;
+    }
+    return T_DONE;
+}
+
 uint8_t DiskEngine::readTape(DiskCpu& cpu) {
-    if (tap_.empty()) return T_NOT_OURS;
     uint16_t sp = cpu.sp();
     bool load = cpu.peek(sp) & 0x01;                    // the pushed F: carry
     uint8_t flag = cpu.peek(sp + 1);                    // the pushed A
     uint16_t ix = cpu.ix(), de = cpu.de();
+
+    if (native_ == N_LOAD) {
+        // The file's two blocks, once.
+        while (nativePos_ < nativeBlocks_.size() && (uint8_t) nativeBlocks_[nativePos_][0] != flag) nativePos_++;
+        if (nativePos_ >= nativeBlocks_.size()) {
+            dropNative();
+            return R_NAME;
+        }
+        const std::string& b = nativeBlocks_[nativePos_++];
+        uint8_t r = serve(cpu, (const uint8_t*) b.data(), b.size(), load, ix, de);
+        if (flag != 0x00) dropNative();
+        return r;
+    }
+    if (tap_.empty()) return T_NOT_OURS;
 
     // Forward from the pointer, round the end, until a block with this
     // flag; once every block has been passed over since the name (LOAD
@@ -336,22 +551,39 @@ uint8_t DiskEngine::readTape(DiskCpu& cpu) {
     bool ok = fseek(f, found->offset, SEEK_SET) == 0 && fread(data.data(), 1, data.size(), f) == data.size();
     fclose(f);
     if (!ok) return R_IO;
-    uint8_t x = 0;
-    for (uint8_t c : data) x ^= c;
-    if (x != 0) return T_FAILED;
-    for (uint16_t i = 0; i < de; i++) {
-        uint8_t c = data[1 + i];
-        if (load) cpu.poke(ix + i, c);
-        else if (cpu.peek(ix + i) != c) return T_FAILED;
-    }
-    return T_DONE;
+    return serve(cpu, data.data(), data.size(), load, ix, de);
 }
 
 uint8_t DiskEngine::writeTape(DiskCpu& cpu) {
-    if (tap_.empty()) return T_NOT_OURS;
     uint16_t sp = cpu.sp();
     uint8_t flag = cpu.peek(sp + 1);
     uint16_t ix = cpu.ix(), de = cpu.de();
+
+    if (native_ == N_SAVE) {
+        if (flag == 0x00 && de == 17) {
+            saveHeader_.clear();
+            for (int i = 0; i < 17; i++) saveHeader_ += (char) cpu.peek(ix + i);
+            return T_DONE;
+        }
+        if (saveHeader_.size() != 17) { dropNative(); return R_IO; }
+        const uint8_t* h = (const uint8_t*) saveHeader_.data();
+        uint8_t type = h[0];
+        uint16_t p1 = h[13] | (h[14] << 8), p2 = h[15] | (h[16] << 8);
+        std::string out;
+        // A screen is the raw 6912 bytes every tool reads; anything else
+        // has the +3DOS header.
+        if (!(type == 3 && de == SCREEN_LEN && p1 == SCREEN_ADDR)) out = plus3Header(type, de, p1, p2);
+        out.reserve(out.size() + de);
+        for (uint32_t i = 0; i < de; i++) out += (char) cpu.peek(ix + i);
+        std::string host = hostPath(nativePath_);
+        dropNative();
+        FILE* f = fopen(host.c_str(), "wb");
+        if (!f) return R_IO;
+        bool ok = fwrite(out.data(), 1, out.size(), f) == out.size();
+        ok = (fclose(f) == 0) && ok;
+        return ok ? T_DONE : R_IO;
+    }
+    if (tap_.empty()) return T_NOT_OURS;
     if ((uint32_t) de + 2 > 0xFFFF) return R_IO;
     std::vector<uint8_t> block(de + 4);
     uint16_t len = de + 2;
@@ -409,8 +641,10 @@ uint8_t DiskEngine::service(uint8_t fn, DiskCpu& cpu) {
             return readTape(cpu);
         case SVC_W_TAPE:
             return writeTape(cpu);
-        case SVC_TAPE_MOUNTED:
-            return tap_.empty() ? 0 : 1;
+        case SVC_TAPE_OURS:
+            return (!tap_.empty() || native_ == N_SAVE) ? 1 : 0;
+        case SVC_REPLACE:
+            return replace(cpu);
         case SVC_CLOSE_ALL:
             unmount();
             return OK;

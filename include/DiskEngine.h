@@ -79,21 +79,34 @@ public:
     static const uint8_t SVC_R_TAPE = 0x04;     // (SP) = R_TAPE's AF: A the flag, carry LOAD;
                                                 //   IX = where, DE = how many
     static const uint8_t SVC_W_TAPE = 0x05;     // (SP) = W_TAPE's AF: A the flag; IX, DE
-    static const uint8_t SVC_TAPE_MOUNTED = 0x06; // 1 if a TAP is mounted
+    static const uint8_t SVC_TAPE_OURS = 0x06;  // 1 if SAVE goes to the engine (a TAP, a file)
     static const uint8_t SVC_CLOSE_ALL = 0x07;  // CLOSE #*: unmount the TAP
     static const uint8_t SVC_FORMAT = 0x08;     // DE/BC: a new, empty TAP, mounted
+    static const uint8_t SVC_REPLACE = 0x09;    // L = 1: Y to "Replace?"; 0: N (answer D)
 
     // The tape functions' answers, below every report code.
     static const uint8_t T_NOT_OURS = 0;        // nothing mounted: the stock tape routine runs
     static const uint8_t T_DONE = 1;            // R_TAPE/W_TAPE: done; TAPE_NAME: a TAP was
                                                 //   mounted, load its first program
     static const uint8_t T_FAILED = 2;          // R_TAPE: a tape loading error
+    static const uint8_t T_NATIVE = 2;          // TAPE_NAME: a native file; SLVM takes the
+                                                //   name at NAME_BUF (NAME_LEN bytes)
+    static const uint8_t T_ASK = 3;             // TAPE_NAME: the same, once the question
+                                                //   at PROMPT_BUF is answered Y
+
+    // Where TAPE_NAME leaves things for the EXROM hooks, in RAM the OS
+    // leaves free (5CCCh-5EE9h).
+    static const uint16_t NAME_LEN = 0x5E0F;
+    static const uint16_t NAME_BUF = 0x5E10;    // 10 bytes
+    static const uint16_t PROMPT_BUF = 0x5E20;  // up to 64 bytes, 0-ended
 
     // Answers: 0, or the RST 8 code of the report the ROM raises (the
     // report is the code + 1: 0Bh is C, 0Eh is F).
     static const uint8_t OK = 0x00;
     static const uint8_t R_NONSENSE = 0x0B;     // C Nonsense in BASIC
-    static const uint8_t R_NAME = 0x0E;         // F Invalid file name
+    static const uint8_t R_BREAK = 0x0C;        // D BREAK - CONT repeats: N to "Replace?"
+    static const uint8_t R_NAME = 0x0E;         // F Invalid file name: not found, a bad name
+    static const uint8_t R_PARAM = 0x19;        // Q Parameter error: the wrong type, a folder
     static const uint8_t R_IO = 0x12;           // J Invalid I/O device: no card, a read failed,
                                                 //   CAT "" with nothing mounted
     static const uint8_t R_UNKNOWN_FN = 0x0B;   // a function this engine doesn't know
@@ -129,6 +142,20 @@ public:
     // The listing CAT prints for a folder, lines ending in CR (0Dh); for
     // the tests. Returns OK or a report code.
     uint8_t buildListing(const std::string& folder, std::string& out);
+    // A native file's contents, from its first 128 bytes and its size:
+    // false if it is neither a +3DOS file nor a raw 6912-byte screen.
+    struct FileInfo {
+        uint8_t type;      // 0 program, 1 number array, 2 character array, 3 bytes
+        uint16_t length, param1, param2;
+        uint32_t dataOffset;
+    };
+    static bool describe(const uint8_t* head, size_t headLen, long size, FileInfo& out);
+    // The 128-byte +3DOS header for a data block (TS-Pico's native.py).
+    static std::string plus3Header(uint8_t type, uint16_t length, uint16_t param1, uint16_t param2);
+    // The tape name of a native file: its base name, the extension dropped,
+    // cut to 10.
+    static std::string tapeNameOf(const std::string& path);
+
     // The listing CAT "x.tap" and CAT "" print: the TAP's blocks.
     uint8_t buildTapListing(const std::string& path2068, std::string& out);
 
@@ -154,12 +181,26 @@ private:
     size_t tapPos_ = 0;           // the next block R_TAPE looks at
     size_t examined_ = 0;         // blocks R_TAPE has passed over since the name
 
+    // A native file, between TAPE_NAME and the blocks.
+    enum Native { N_NONE, N_LOAD, N_ASK, N_SAVE };
+    Native native_ = N_NONE;
+    std::string nativePath_;               // 2068 path
+    std::vector<std::string> nativeBlocks_; // LOAD: flag, data, checksum
+    size_t nativePos_ = 0;
+    std::string saveHeader_;               // SAVE: the 17-byte tape header
+
     std::string hostPath(const std::string& path2068) const;
+    static const char* kindOf(const std::string& host, long size);
     static bool scanTap(const std::string& host, std::vector<Block>& out);
     static std::string text(DiskCpu& cpu);   // DE/BC
     uint8_t readTape(DiskCpu& cpu);
     uint8_t writeTape(DiskCpu& cpu);
     uint8_t tapeName(DiskCpu& cpu);
+    uint8_t loadNative(DiskCpu& cpu, uint8_t command, const std::string& name);
+    uint8_t saveNative(DiskCpu& cpu, const std::string& name);
+    uint8_t replace(DiskCpu& cpu);
+    void dropNative();
+    static uint8_t serve(DiskCpu& cpu, const uint8_t* block, size_t len, bool load, uint16_t ix, uint16_t de);
     uint8_t format(DiskCpu& cpu);
     uint8_t catOpen(DiskCpu& cpu);
 };

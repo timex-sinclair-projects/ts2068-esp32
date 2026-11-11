@@ -61,11 +61,11 @@ public:
     uint16_t hl() override { return HL; }
     uint16_t ix() override { return IX; }
     uint16_t sp() override { return SP; }
-    // A string at 8000h for DE/BC.
+    // A string at F000h for DE/BC.
     void str(const std::string& t) {
-        DE = 0x8000;
+        DE = 0xF000;
         BC = (uint16_t) t.size();
-        for (size_t i = 0; i < t.size(); i++) mem[0x8000 + i] = (uint8_t) t[i];
+        for (size_t i = 0; i < t.size(); i++) mem[0xF000 + i] = (uint8_t) t[i];
     }
     // R_TAPE's/W_TAPE's pushed AF.
     void pushedAF(uint8_t a, bool carry) { mem[SP] = carry ? 1 : 0; mem[SP + 1] = a; }
@@ -112,6 +112,13 @@ static void writeBytes(const std::string& path, const std::string& bytes) {
     fclose(f);
 }
 
+// A file's row in a folder listing, after the index and mark.
+static std::string row(const char* name, const char* type, const char* size) {
+    char b[64];
+    snprintf(b, sizeof b, "%-14s %-5s %6s", name, type, size);
+    return b;
+}
+
 static std::vector<std::string> lines(const std::string& text) {
     std::vector<std::string> out;
     std::string cur;
@@ -148,7 +155,7 @@ int main() {
     check(L.size() == 8, "a header, 2 folders, 4 files and a summary");
     check(L.size() > 0 && L[0] == "/", "the header is the folder");
     check(L.size() > 2 && L[1] == "    <Basic>" && L[2] == "    <games>", "folders first, sorted ignoring case");
-    check(L.size() > 3 && L[3].find("a-very-long-file-na>") != std::string::npos, "a long name is cut with '>'");
+    check(L.size() > 3 && L[3].find("a-very-long-f> TAP") != std::string::npos, "a long name is cut with '>'");
     check(L.size() > 4 && L[4] == "  2 alpha.bas             99999", "a file line: index, name, size in bytes");
     check(L.size() > 5 && L[5] == "  3 Big.bin                 98K", "100000 bytes and up in K");
     check(L.size() > 6 && L[6].find("zeta.tap") != std::string::npos, "files sorted ignoring case");
@@ -221,17 +228,17 @@ int main() {
               "TAPE_NAME on the syntax pass: nothing happens");
         c.mem[0x5C3B] = 0x80;
         c.str("missing.tap");
-        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NOT_OURS && e.mounted().empty(),
-              "LOAD \"missing.tap\": not a file, the stock tape (nothing mounted)");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_NAME && e.mounted().empty(),
+              "LOAD \"missing.tap\": not a file: F");
         c.pushedAF(0x00, true);
         check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_NOT_OURS, "R_TAPE, nothing mounted: the stock routine");
         check(e.service(DiskEngine::SVC_W_TAPE, c) == DiskEngine::T_NOT_OURS, "W_TAPE, nothing mounted: the stock routine");
-        check(e.service(DiskEngine::SVC_TAPE_MOUNTED, c) == 0, "TAPE_MOUNTED: 0");
+        check(e.service(DiskEngine::SVC_TAPE_OURS, c) == 0, "TAPE_OURS: 0");
 
         c.str("games/game.tap");
         check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_DONE, "LOAD \"games/game.tap\": mounted, T_DONE");
         check(e.mounted() == "/games/game.tap" && e.tapBlocks() == 5 && e.tapPointer() == 0, "5 blocks, the pointer at the start");
-        check(e.service(DiskEngine::SVC_TAPE_MOUNTED, c) == 1, "TAPE_MOUNTED: 1");
+        check(e.service(DiskEngine::SVC_TAPE_OURS, c) == 1, "TAPE_OURS: 1");
 
         // LOAD "": the header, then the program.
         c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
@@ -364,6 +371,163 @@ int main() {
         check(e.service(DiskEngine::SVC_FORMAT, c) == DiskEngine::R_IO, "FORMAT in a folder that isn't there: J");
         c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
         check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::R_NAME, "R_TAPE on an empty TAP: F");
+    }
+
+
+    printf("\nNative files\n");
+    {
+        DiskEngine e(root);
+        FakeCpu c;
+        c.mem[0x5C3B] = 0x80;                     // FLAGS: run time
+        // CH_ADD points at what follows the name: 6000h.
+        auto after = [&c](uint8_t tok) { c.mem[0x5C5D] = 0x00; c.mem[0x5C5E] = 0x60; c.mem[0x6000] = ' '; c.mem[0x6001] = tok; };
+        auto cmd = [&c](uint8_t t) { c.mem[0x5C74] = t; };
+        auto blocks = [&e, &c](uint16_t hdrAt, uint16_t dataAt, bool load) -> int {
+            // The ROM: a header, then the data with the header's length.
+            c.IX = hdrAt; c.DE = 17; c.pushedAF(0x00, load);
+            uint8_t r = e.service(DiskEngine::SVC_R_TAPE, c);
+            if (r != DiskEngine::T_DONE) return r;
+            c.IX = dataAt; c.DE = c.mem[hdrAt + 11] | (c.mem[hdrAt + 12] << 8); c.pushedAF(0xFF, load);
+            return e.service(DiskEngine::SVC_R_TAPE, c);
+        };
+        auto save = [&e, &c](uint8_t type, const std::string& name, uint16_t len, uint16_t p1, uint16_t p2, uint16_t from) {
+            uint16_t h = 0x6100;
+            c.mem[h] = type;
+            for (int i = 0; i < 10; i++) c.mem[h + 1 + i] = i < (int) name.size() ? name[i] : ' ';
+            uint16_t f[3] = {len, p1, p2};
+            for (int i = 0; i < 3; i++) { c.mem[h + 11 + 2 * i] = f[i] & 0xFF; c.mem[h + 12 + 2 * i] = f[i] >> 8; }
+            c.IX = h; c.DE = 17; c.pushedAF(0x00, false);
+            uint8_t r = e.service(DiskEngine::SVC_W_TAPE, c);
+            if (r != DiskEngine::T_DONE) return (int) r;
+            c.IX = from; c.DE = len; c.pushedAF(0xFF, false);
+            return (int) e.service(DiskEngine::SVC_W_TAPE, c);
+        };
+
+        // SAVE "games/hello.bas" LINE 10: a program.
+        cmd(0); after(0xCA);
+        c.str("games/hello.bas");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NATIVE, "SAVE \"games/hello.bas\": a native file");
+        check(c.mem[DiskEngine::NAME_LEN] == 5 && memcmp(c.mem + DiskEngine::NAME_BUF, "hello", 5) == 0, "SLVM gets the name hello");
+        check(e.service(DiskEngine::SVC_TAPE_OURS, c) == 1, "TAPE_OURS: SAVE skips the tape prompt");
+        const char prog[] = "\x00\x0a\x05\x00\xf5\x22\x68\x69\x22\x0d";   // 10 PRINT "hi"
+        memcpy(c.mem + 0x7000, prog, 10);
+        check(save(0, "hello", 10, 10, 10, 0x7000) == DiskEngine::T_DONE, "the header and the program go to the engine");
+        std::vector<uint8_t> file = readFile((root + "/games/hello.bas").c_str());
+        std::string want = DiskEngine::plus3Header(0, 10, 10, 10) + std::string(prog, 10);
+        check(file.size() == 138 && memcmp(file.data(), want.data(), 138) == 0, "games/hello.bas: the +3DOS header and the program");
+        check(memcmp(file.data(), "PLUS3DOS\x1a\x01\x00\x8a\x00\x00\x00\x00\x0a\x00\x0a\x00\x0a\x00", 22) == 0, "header fields as TS-Pico writes them");
+        check(e.service(DiskEngine::SVC_TAPE_OURS, c) == 0, "done: TAPE_OURS 0");
+
+        // LOAD "games/hello.bas": the header SLVM sees, then the program.
+        cmd(1); after(0x0D);
+        c.str("games/hello.bas");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NATIVE && c.mem[DiskEngine::NAME_LEN] == 0, "LOAD: native, no name");
+        memset(c.mem + 0x7000, 0, 16);
+        check(blocks(0x6200, 0x7000, true) == DiskEngine::T_DONE, "the header, then the data");
+        check(c.mem[0x6200] == 0 && memcmp(c.mem + 0x6201, "hello     ", 10) == 0 && c.mem[0x620D] == 10, "a Program header: hello, LINE 10");
+        check(memcmp(c.mem + 0x7000, prog, 10) == 0, "the program is back");
+        c.IX = 0x6200; c.DE = 17; c.pushedAF(0x00, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_NOT_OURS, "and then it's gone (nothing mounted: the stock routine)");
+        // VERIFY, MERGE.
+        cmd(2); c.str("games/hello.bas");
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        check(blocks(0x6200, 0x7000, false) == DiskEngine::T_DONE, "VERIFY: the same bytes pass");
+        c.mem[0x7003] ^= 1;
+        c.str("games/hello.bas");
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        check(blocks(0x6200, 0x7000, false) == DiskEngine::T_FAILED, "VERIFY: a changed byte fails");
+        cmd(3); c.str("games/hello.bas");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NATIVE, "MERGE a program: native");
+        // The wrong type: Q.
+        cmd(1); after(0xAF); c.str("games/hello.bas");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_PARAM, "LOAD a program as CODE: Q");
+        after(0xE4);
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_PARAM, "as DATA: Q");
+
+        // SAVE "pic" SCREEN$: raw 6912 bytes; LOAD it as SCREEN$ and CODE.
+        cmd(0); after(0xAA); c.str("pic");
+        for (int i = 0; i < 6912; i++) c.mem[0x4000 + i] = (uint8_t) (i * 7);
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        check(save(3, "pic", 6912, 16384, 32768, 0x4000) == DiskEngine::T_DONE, "SAVE SCREEN$: done");
+        file = readFile((root + "/pic").c_str());
+        check(file.size() == 6912 && memcmp(file.data(), c.mem + 0x4000, 6912) == 0, "pic: the raw 6912 bytes");
+        cmd(1); after(0xAA); c.str("pic");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NATIVE, "LOAD \"pic\" SCREEN$: native");
+        check(blocks(0x6200, 0xA000, true) == DiskEngine::T_DONE && memcmp(c.mem + 0xA000, c.mem + 0x4000, 6912) == 0
+              && c.mem[0x620D] == 0x00 && c.mem[0x620E] == 0x40, "Code 16384,6912, the bytes");
+        after(0x0D); c.str("pic");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_PARAM, "LOAD \"pic\" (a program): Q");
+
+        // CODE and DATA keep their fields.
+        cmd(0); after(0xAF); c.str("mc.bin");
+        memcpy(c.mem + 0x8000, "\x01\xd2\x04\xc9", 4);
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        check(save(3, "mc", 4, 32768, 32768, 0x8000) == DiskEngine::T_DONE, "SAVE \"mc.bin\" CODE 32768,4");
+        cmd(0); after(0xE4); c.str("a.dat");
+        memcpy(c.mem + 0x8100, "\x01\x02\x00\x00\x00\x00\x00", 7);
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        check(save(1, "a", 7, 0xC100, 32768, 0x8100) == DiskEngine::T_DONE, "SAVE \"a.dat\" DATA a()");
+        cmd(1); after(0xE4); c.str("a.dat");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NATIVE && blocks(0x6200, 0x8200, true) == DiskEngine::T_DONE
+              && c.mem[0x6200] == 1 && c.mem[0x620E] == 0xC1, "LOAD DATA: a number array, its name byte kept");
+
+        // A file made elsewhere: as CODE it loads whole; otherwise F.
+        writeBytes(root + "/raw.bin", "hello");
+        cmd(1); after(0xAF); c.str("raw.bin");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NATIVE && blocks(0x6200, 0x9000, true) == DiskEngine::T_DONE
+              && memcmp(c.mem + 0x9000, "hello", 5) == 0 && c.mem[0x620D] == 0x00 && c.mem[0x620E] == 0x80, "a headerless file as CODE: whole, at 32768");
+        after(0x0D);
+        c.str("raw.bin");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_NAME, "as a program: F");
+
+        // Missing names, folders, LOAD "".
+        c.str("nope");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_NAME, "LOAD a file that isn't there: F");
+        c.str("games");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_PARAM, "LOAD a folder: Q");
+        c.str("");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_IO, "LOAD \"\" with nothing mounted: J");
+        cmd(0);
+        c.str("games");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_PARAM, "SAVE over a folder: Q");
+        c.str("nofolder/x");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_NAME, "SAVE into a folder that isn't there: F");
+        c.str("new.tap");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_NAME, "SAVE \"x.tap\" with nothing mounted: F (FORMAT makes TAPs)");
+        c.str("a-much-longer-name.bas");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NATIVE && c.mem[DiskEngine::NAME_LEN] == 10
+              && memcmp(c.mem + DiskEngine::NAME_BUF, "a-much-lon", 10) == 0, "a long name: SLVM gets 10 characters");
+
+        // Replace?
+        c.str("games/hello.bas");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_ASK, "SAVE over a file: ask");
+        check(std::string((char*) c.mem + DiskEngine::PROMPT_BUF) == "Replace hello.bas? (Y/N)", "Replace hello.bas? (Y/N)");
+        check(e.service(DiskEngine::SVC_TAPE_OURS, c) == 0, "not ours until Y");
+        c.HL = 0;
+        check(e.service(DiskEngine::SVC_REPLACE, c) == DiskEngine::R_BREAK && e.service(DiskEngine::SVC_TAPE_OURS, c) == 0, "N: D, and nothing armed");
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        c.HL = 1;
+        check(e.service(DiskEngine::SVC_REPLACE, c) == DiskEngine::OK && e.service(DiskEngine::SVC_TAPE_OURS, c) == 1, "Y: the SAVE goes ahead");
+        memcpy(c.mem + 0x7000, "\x00\x14\x02\x00\xfb\x0d", 6);
+        check(save(0, "hello", 6, 0x8000, 6, 0x7000) == DiskEngine::T_DONE && readFile((root + "/games/hello.bas").c_str()).size() == 134, "replaced");
+
+        // With a TAP mounted, nothing is native.
+        writeBytes(root + "/t.tap", "");
+        e.mount("/t.tap");
+        cmd(0); c.str("x.bas");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NOT_OURS, "a TAP mounted: SAVE goes to it");
+        e.reset();
+
+        // CAT shows the types.
+        std::string L2;
+        check(e.buildListing("/", L2) == DiskEngine::OK, "the root lists");
+        for (auto& l : lines(L2)) printf("        |%s|\n", l.c_str());
+        check(L2.find(row("a.dat", "Num()", "135")) != std::string::npos, "a.dat: Num()");
+        check(L2.find(row("mc.bin", "Code", "132")) != std::string::npos, "mc.bin: Code");
+        check(L2.find(row("pic", "Scr", "6912")) != std::string::npos, "pic: Scr");
+        check(L2.find(row("raw.bin", "", "5")) != std::string::npos, "raw.bin: no type");
+        e.buildListing("/games/", L2);
+        check(L2.find(row("hello.bas", "Prog", "134")) != std::string::npos, "games/hello.bas: Prog");
     }
 
     printf("\nROM patches\n");
