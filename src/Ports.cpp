@@ -39,7 +39,6 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "MemESP.h"
 #include "SCLD.h"
 #include "SCLDPrinter.h"
-#include "VirtualDisk.h"
 #include "DosDisk.h"
 #include "DiskEngine.h"
 #ifdef ESP2068_TSPICO
@@ -324,15 +323,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
             case 0x000F:
                 // The TS-Pico, mirrored locally; see include/TSPico.h.
                 return TSPico::in(address & 0xFF);
-#else
-            case 0x000F:
-                // Phase 4 Piece A: virtual disk status byte -- see
-                // include/VirtualDisk.h and PLAN.md's "Phase 4" writeup.
-                // Full low-byte decode like every other TS2068 port
-                // added by this port; VirtualDisk itself never touches
-                // Z80 registers/memory directly (host-testable, see its
-                // own header comment), so no register reads needed here.
-                return VirtualDisk::lastStatus();
 #endif
             // Other TS2068 ports (AY joystick input, etc.): not this
             // slice's scope.
@@ -599,70 +589,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
                 // The TS-Pico, mirrored locally; see include/TSPico.h.
                 TSPico::out(address & 0xFF, data);
                 return;
-#else
-            case 0x000E: {
-                // Phase 4 Piece A: virtual disk command byte -- see
-                // include/VirtualDisk.h and PLAN.md's "Phase 4" writeup.
-                // This is the thin adapter translating real Z80
-                // registers/memory into calls on VirtualDisk's pure,
-                // host-testable API -- VirtualDisk itself never touches
-                // Z80::/Z80Ops:: directly, matching this project's
-                // existing "the register-touching glue lives in
-                // Ports.cpp, not in the peripheral's own class" pattern
-                // (see the keyboard/AY port increments). Buffer sizes
-                // are read from DE/BC rather than capped at a fixed
-                // stack array, since a data block being LOADed/SAVEd
-                // can legitimately be much larger than one line of CAT
-                // output -- std::vector sizes itself to whatever the
-                // real transfer needs.
-                switch (data) {
-                    case VirtualDisk::CMD_MOUNT_READ:
-                    case VirtualDisk::CMD_MOUNT_WRITE:
-                    case VirtualDisk::CMD_FIND_BLOCK: {
-                        uint16_t ptr = Z80::getRegDE();
-                        uint16_t len = Z80::getRegBC();
-                        std::string name;
-                        name.reserve(len);
-                        for (uint16_t i = 0; i < len; i++)
-                            name += (char) Z80Ops::peek8_2068((uint16_t)(ptr + i));
-                        if (data == VirtualDisk::CMD_MOUNT_READ) VirtualDisk::mountRead(name);
-                        else if (data == VirtualDisk::CMD_MOUNT_WRITE) VirtualDisk::mountWrite(name);
-                        else VirtualDisk::findBlock(name);
-                        return;
-                    }
-                    case VirtualDisk::CMD_UNMOUNT:
-                        VirtualDisk::unmount();
-                        return;
-                    case VirtualDisk::CMD_READ_HEADER:
-                    case VirtualDisk::CMD_READ_DATA:
-                    case VirtualDisk::CMD_CAT_SD_LINE:
-                    case VirtualDisk::CMD_CAT_CONTAINER_LINE: {
-                        uint16_t addr = Z80::getRegIX();
-                        uint16_t maxLen = Z80::getRegDE();
-                        std::vector<uint8_t> buf(maxLen);
-                        int n = 0;
-                        if (data == VirtualDisk::CMD_READ_HEADER) n = VirtualDisk::readHeader(buf.data(), (int) maxLen);
-                        else if (data == VirtualDisk::CMD_READ_DATA) n = VirtualDisk::readData(buf.data(), (int) maxLen);
-                        else if (data == VirtualDisk::CMD_CAT_SD_LINE) n = VirtualDisk::catSdLine(buf.data(), (int) maxLen);
-                        else n = VirtualDisk::catContainerLine(buf.data(), (int) maxLen);
-                        for (int i = 0; i < n; i++) Z80Ops::poke8_2068((uint16_t)(addr + i), buf[i]);
-                        return;
-                    }
-                    case VirtualDisk::CMD_WRITE_HEADER:
-                    case VirtualDisk::CMD_WRITE_DATA: {
-                        uint16_t addr = Z80::getRegIX();
-                        uint16_t len = Z80::getRegDE();
-                        std::vector<uint8_t> buf(len);
-                        for (uint16_t i = 0; i < len; i++)
-                            buf[i] = Z80Ops::peek8_2068((uint16_t)(addr + i));
-                        if (data == VirtualDisk::CMD_WRITE_HEADER) VirtualDisk::writeHeader(buf.data(), (int) len);
-                        else VirtualDisk::writeData(buf.data(), (int) len);
-                        return;
-                    }
-                    default:
-                        return;
-                }
-            }
 #endif
             // The native disk (include/DiskEngine.h): a service call, and
             // the DOS ROM overlay on and off. Nothing without the DOS ROM.

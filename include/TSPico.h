@@ -15,8 +15,8 @@ GPI34/GPI39 have no pull-ups and float with nothing plugged in. The Pico
 drives only the two input-only pins, neither a strapping pin, so it can't
 put the ESP32 into download mode at reset.
 
-Built only with -D ESP2068_TSPICO, which takes ports 0Eh/0Fh from
-VirtualDisk (the two can't share them). See TSPICO-LINK.md.
+Built only with -D ESP2068_TSPICO, which decodes ports 0Eh/0Fh (without
+it they read FFh and ignore writes). See TSPICO-LINK.md.
 
 */
 

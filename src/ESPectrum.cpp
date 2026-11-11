@@ -47,9 +47,9 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "DockLoader.h"
 #ifdef ESP2068_TSPICO
 #include "TSPico.h"
-#include "DosDisk.h"
 #include <vector>
 #endif
+#include "DosDisk.h"
 #ifdef ESP2068_SERIAL_KEYS
 #include "SerialKeys.h"
 #endif
