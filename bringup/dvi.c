@@ -4,6 +4,9 @@
 // Pi Ltd). The RP2350pc's HDMI pins match the Pico DVI Sock that example
 // targets: D0 = GPIO12/13, CK = 14/15, D2 = 16/17, D1 = 18/19.
 //
+// Copyright (c) 2024 Raspberry Pi Ltd.
+// SPDX-License-Identifier: BSD-3-Clause
+//
 // Changes from the example:
 // - clk_hstx is clk_sys / 2 = 126 MHz, so the pixel clock is exactly
 //   25.2 MHz (the example leaves it at 125 MHz: 25.0 MHz, 59.5 Hz).
