@@ -141,6 +141,10 @@ void SCLD::unloadExromChunk(int chunk) {
     if (chunk >= 0 && chunk < 8) exromChunk[chunk] = nullptr;
 }
 
+uint8_t* SCLD::exromChunkData(int chunk) {
+    return (chunk >= 0 && chunk < 8) ? exromChunk[chunk] : nullptr;
+}
+
 void SCLD::loadExromImage(uint8_t* data, int numChunks) {
     for (int c = 0; c < 8; c++) {
         loadExromChunk(c, (c < numChunks) ? (data + c * 0x2000) : nullptr);

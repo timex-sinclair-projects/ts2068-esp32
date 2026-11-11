@@ -104,7 +104,12 @@ static inline uint8_t* dockloader_alloc8k() { return (uint8_t*) calloc(0x2000, 1
 static inline void dockloader_free(uint8_t* p) { free(p); }
 #else
 #include "esp_heap_caps.h"
-static inline uint8_t* dockloader_alloc8k() { return (uint8_t*) heap_caps_calloc(0x2000, 1, MALLOC_CAP_8BIT); }
+// PSRAM first when there is any, as in SCLD.cpp: the 640-wide VGA mode
+// needs the internal RAM.
+static inline uint8_t* dockloader_alloc8k() {
+    uint8_t* p = (uint8_t*) heap_caps_calloc(0x2000, 1, MALLOC_CAP_SPIRAM);
+    return p ? p : (uint8_t*) heap_caps_calloc(0x2000, 1, MALLOC_CAP_8BIT);
+}
 static inline void dockloader_free(uint8_t* p) { heap_caps_free(p); }
 #endif
 
@@ -127,6 +132,12 @@ namespace {
     // unload() can free them and eject the cartridge cleanly.
     std::vector<uint8_t*> allocatedChunks;
 
+    // EXROM chunks the cartridge's own EXROM bank replaced, and what was
+    // there before (normally the system EXROM from RomLoader), so unload()
+    // puts the system EXROM back instead of leaving an empty socket.
+    uint8_t exromReplacedMask = 0;
+    uint8_t* exromReplaced[8] = { nullptr };
+
     uint8_t autostartMask = 0;
     bool autostartCandidate = false;
     uint16_t autostartEntry = 0;
@@ -135,7 +146,18 @@ namespace {
 
 void DockLoader::unload() {
     for (int c = 0; c < 8; c++) SCLD::unloadDockChunk(c);
-    for (int c = 0; c < 8; c++) SCLD::unloadExromChunk(c);
+    // Only the EXROM chunks this cartridge supplied: clearing all of them
+    // also removed the system EXROM, so the HOME ROM's start-up copied an
+    // empty function dispatcher to $6200 and the machine reset in a loop
+    // (found on hardware with Zebra OS-64 in the dock).
+    for (int c = 0; c < 8; c++) {
+        if (exromReplacedMask & (1 << c)) {
+            if (exromReplaced[c]) SCLD::loadExromChunk(c, exromReplaced[c]);
+            else SCLD::unloadExromChunk(c);
+        }
+        exromReplaced[c] = nullptr;
+    }
+    exromReplacedMask = 0;
     for (uint8_t* p : allocatedChunks) dockloader_free(p);
     allocatedChunks.clear();
     autostartMask = 0;
@@ -207,6 +229,10 @@ bool DockLoader::loadFromBuffer(const uint8_t* data, size_t size) {
                 autostartEntry = buf[2] | (buf[3] << 8);
             }
         } else { // BANK_EXROM
+            if (!(exromReplacedMask & (1 << pc.index))) {
+                exromReplaced[pc.index] = SCLD::exromChunkData(pc.index);
+                exromReplacedMask |= 1 << pc.index;
+            }
             SCLD::loadExromChunk(pc.index, buf);
         }
     }

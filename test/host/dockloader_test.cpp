@@ -21,6 +21,7 @@ Optionally pass a different .dck path as argv[1].
 #include "SCLD.h"
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #include <string>
 
 static int failures = 0;
@@ -97,6 +98,34 @@ int main(int argc, char** argv) {
           "loadFromBuffer() on a truncated buffer returns false");
     check(SCLD::memChunk[0][0] == before0,
           "a failed load leaves the previously-loaded cartridge's data untouched");
+
+    // Regression (found on hardware, 2026-11-11): loading a cartridge used
+    // to clear every EXROM chunk, including the system EXROM RomLoader had
+    // loaded, so the HOME ROM copied an empty function dispatcher and the
+    // machine reset in a loop.
+    printf("\n-- the system EXROM survives a cartridge --\n");
+    DockLoader::unload();
+    static uint8_t systemExrom[0x2000];
+    memset(systemExrom, 0xE5, sizeof(systemExrom));
+    SCLD::loadExromImage(systemExrom, 1);
+
+    std::vector<uint8_t> dockOnly(9 + 0x2000, 0x11);
+    dockOnly[0] = 0;                                 // DOCK bank
+    for (int c = 1; c <= 8; c++) dockOnly[c] = c == 1 ? 0x02 : 0x00; // chunk 0 ROM + image
+    check(DockLoader::loadFromBuffer(dockOnly.data(), dockOnly.size()), "a DOCK-only cartridge loads");
+    check(SCLD::exromChunkData(0) == systemExrom, "loading it leaves the system EXROM in chunk 0");
+    DockLoader::unload();
+    check(SCLD::exromChunkData(0) == systemExrom, "unloading it leaves the system EXROM in chunk 0");
+
+    std::vector<uint8_t> withExrom(9 + 0x2000, 0x22);
+    withExrom[0] = 254;                              // EXROM bank
+    for (int c = 1; c <= 8; c++) withExrom[c] = c == 1 ? 0x02 : 0x00;
+    check(DockLoader::loadFromBuffer(withExrom.data(), withExrom.size()), "a cartridge with its own EXROM chunk 0 loads");
+    check(SCLD::exromChunkData(0) != systemExrom && SCLD::exromChunkData(0)[0] == 0x22,
+          "its EXROM chunk replaces the system one while loaded");
+    DockLoader::unload();
+    check(SCLD::exromChunkData(0) == systemExrom, "unloading it puts the system EXROM back");
+    SCLD::unloadExromChunk(0);
 
     printf("\n=====================\n");
     if (failures == 0) {

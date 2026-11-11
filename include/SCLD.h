@@ -153,6 +153,11 @@ public:
     // how a .DCK's EXROM bank is itself already chunk-structured.
     static void loadExromChunk(int chunk, uint8_t* data);
     static void unloadExromChunk(int chunk);
+    // The chunk's current EXROM image, or nullptr if the socket is empty
+    // (unlike exromPage(), which substitutes the empty-socket page).
+    // DockLoader uses it to put back the system EXROM a cartridge's own
+    // EXROM bank replaced.
+    static uint8_t* exromChunkData(int chunk);
 
     // Convenience wrapper over loadExromChunk() for RomLoader's simpler
     // case: one whole-file buffer holding `numChunks` (1..8) contiguous

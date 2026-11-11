@@ -44,6 +44,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "MemESP.h"
 #include "SCLD.h"
 #include "RomLoader.h"
+#include "DockLoader.h"
 #ifdef ESP2068_SERIAL_KEYS
 #include "SerialKeys.h"
 #endif
@@ -741,6 +742,17 @@ void ESPectrum::setup() {
             printf("TS2068: no HOME ROM at %s -- running with a blank ROM\n", RomLoader::DEFAULT_HOME_ROM_PATH);
         if (!RomLoader::loadExromFromFile(RomLoader::DEFAULT_EXROM_PATH))
             printf("TS2068: no EXROM at %s -- EXROM chunks will read as an empty socket\n", RomLoader::DEFAULT_EXROM_PATH);
+        // A cartridge in the dock, if there is one at the fixed path (no OSD
+        // picker yet). The ROM's own start-up finds and enters it.
+        const char* cartPath = "/sd/2068/cart.dck";
+        FILE* cart = fopen(cartPath, "rb");
+        if (cart) {
+            fclose(cart);
+            if (DockLoader::loadFromFile(cartPath)) {
+                printf("TS2068: cartridge %s loaded%s\n", cartPath, DockLoader::hasAutostart() ? " (LROS)" : "");
+            } else
+                printf("TS2068: %s is not a valid .DCK -- no cartridge\n", cartPath);
+        }
     }
 
     // Load romset

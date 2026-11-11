@@ -191,20 +191,13 @@ void CPU::reset() {
         ESPectrum::target[2] = MICROS_PER_FRAME_2068_125SPEED;
         ESPectrum::target[3] = MICROS_PER_FRAME_2068_150SPEED;
 
-        // LROS-style autostart: page in whatever chunks the loaded DOCK
-        // cartridge populated, then jump to the cartridge's own header-
-        // specified entry point -- NOT just PC=0. Runs after SCLD::reset()
-        // (ESPectrum.cpp calls it ahead of CPU::reset()), so this
-        // correctly overrides the all-HOME reset state rather than being
-        // clobbered by it. Setting PC explicitly (rather than relying on
-        // Z80::reset()'s PC=0, above) is the fix for a real bug real-
-        // cartridge testing caught -- see DockLoader.cpp's top comment.
-        // See the same comment for what this still doesn't cover (AROS,
-        // mid-session launches).
-        if (DockLoader::hasAutostart()) {
-            SCLD::OUT_F4(DockLoader::autostartMmuSelect());
-            Z80::setRegPC(DockLoader::autostartEntryPoint());
-        }
+        // No cartridge shortcut here: a real TS2068 boots its HOME ROM
+        // normally, and the EXROM's EXTINIT (BLDSCT reading the dock's
+        // header via XFER_BYTES, then NORMSVAR) enters an LROS cartridge
+        // through GOTO_BANK with the header's entry point and chunk byte,
+        // once the system variables and the RAM dispatcher exist. Jumping
+        // straight to the entry point at reset (as this did) skipped all
+        // of that, and Zebra OS-64 failed to start on hardware.
 
         // Printer (port 0xFB) state is timed against global_tstates
         // (zeroed a few lines below, at the end of this function) --
