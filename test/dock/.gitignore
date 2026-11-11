@@ -1,0 +1,6 @@
+# Local-only real cartridge/ROM dumps — never commit these.
+# See README.md's "Provenance policy" before putting anything here.
+real/
+
+__pycache__/
+*.pyc
