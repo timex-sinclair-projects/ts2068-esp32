@@ -26,7 +26,7 @@ Draft 1's main idea was to run the real TS-Pico firmware on the emulator's own c
 
 ## 2. What already exists: ESP2068
 
-`~/Documents/github/ESP2068` (546 commits, last 2026-07-11) is a TS2068 port of ESPectrum for exactly this class of board (TTGO VGA32 / SBC-FabGL). According to its CLAUDE.md and PLAN.md:
+ESP2068 (546 commits, last 2026-07-11; merged into this repository on 2026-11-11) is a TS2068 port of ESPectrum for exactly this class of board (TTGO VGA32 / SBC-FabGL). According to its CLAUDE.md and PLAN.md:
 
 **What it has:**
 - The SCLD, with ports F4/FF and the 8-chunk memory model, with EXROM chunk-indexed.
@@ -97,7 +97,7 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 ### Phase 0: Bring up ESP2068 on the board
 - Build ESP2068's `nopsram` environment with PlatformIO and flash it over the USB-C port (CH340X). Put the stock TS2068 ROMs on the SD at its fixed paths.
 - Check what works: boot to the TS2068 copyright screen, the PS/2 keyboard, BASIC, the beeper and AY, the VGA mode and hi-res, and DOCK cartridges.
-- Record the results in ESP2068's PLAN.md, and fix what fails there.
+- Record the results in PLAN.md, and fix what fails there.
 - **Gate 0:** stock TS2068 BASIC runs at full speed with keyboard and sound.
 
 **Status (2026-11-11): boots to a clean copyright screen; keyboard, sound and speed not yet tested (no PS/2 keyboard yet).**
@@ -130,14 +130,14 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 - Load the 32K `TSPICO-23.ROM`: 16K HOME plus 16K EXROM. ESP2068 already accepts an EXROM of 8K to 64K.
 - **Gate 1:** the TS-Pico ROM boots, and with no Pico attached it reads "no device" (`IN 0Fh` = FFh, `IN 0Eh` = 00h).
 
-**Phase 1 status (2026-11-11): Gate 1 passed on the board.** The work is on ESP2068 branch `tspico-link`.
+**Phase 1 status (2026-11-11): Gate 1 passed on the board.** The work was done on branch `tspico-link`, since merged into `main`.
 
 **Code:**
 - `TSPicoBus` is the bus mirror, written as pure, host-tested C++.
 - `TSPicoUart.cpp` is the UART1 back end.
 - The build flag `ESP2068_TSPICO` is on in `fabgl2068`. It gives ports 0Eh/0Fh to the TS-Pico instead of ESP2068's own VirtualDisk, since the two can't share them.
 
-**Protocol:** `TSPICO-LINK.md` in ESP2068 defines bridge v1.1, including what the Pico side must do in Phase 2. In outline:
+**Protocol:** [`TSPICO-LINK.md`](TSPICO-LINK.md) defines bridge v1.1, including what the Pico side must do in Phase 2. In outline:
 - **Emulator to Pico:** bridge-v1 frames for the Z80's writes, plus op 1 acking each byte taken and op 5 for an underrun.
 - **Pico to emulator:**
   - `80 y s` status, where `s` is a write count that rejects stale status.
@@ -182,7 +182,7 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 
 **Phase 2 is paused (2026-11-11)** while a Pico board is designed for the AccessBus.
 
-**Video modes (2026-11-11, ESP2068 branch `video-modes`): done and checked on the board.**
+**Video modes (2026-11-11, branch `video-modes`, since merged into `main`): done and checked on the board.**
 - **All eight SCLD screen modes are drawn:**
   - standard
   - second screen
@@ -214,7 +214,7 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 
 ## 5. Questions to settle together
 
-1. **Where should the code live?** The emulator work belongs in ESP2068 and the Pico side in tspico-firmware-build. This folder (`ts2068-esp32`, renamed from `ts2068-2350` on 2026-11-11) would hold only the plan, the adapter and the integration tests, or be retired.
+1. **Where should the code live?** Settled 2026-11-11: the emulator (ESP2068) was merged into this repository with its full history, and this repository supersedes the separate ESP2068 repo. The Pico side still belongs in tspico-firmware-build.
 2. **One SD card or two?**
    - The Pico's card holds the TAPs, as on a real TS-Pico. The ESP32 can fetch the ROM from the Pico, so it needs no card.
    - Or the ESP32 keeps its own card for ROMs and snapshots.
