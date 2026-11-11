@@ -1095,6 +1095,8 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
     uint8_t hiresInkByte = zxColor(hiresInk, 0);
     uint8_t hiresPaperByte = zxColor(hiresPaper, 0);
 
+    // The I2S DMA sends each 32-bit word's bytes in the order 2,3,0,1, so
+    // pixel x lives at byte x ^ 2 (as in GraphicsR2G2B2S2Swapped::dot()).
     for (int row = 0; row < fbActive; row++) {
 
         uint8_t* out = vga.frameBuffer[fbTop + row];
@@ -1106,7 +1108,7 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
                 uint8_t pixels[16];
                 SCLDVideo::expandHiresBytePair(dfile1[bmpOffset], dfile2[bmpOffset], pixels);
                 uint8_t* dst = out + col * 16;
-                for (int i = 0; i < 16; i++) dst[i] = pixels[i] ? hiresInkByte : hiresPaperByte;
+                for (int i = 0; i < 16; i++) dst[i ^ 2] = pixels[i] ? hiresInkByte : hiresPaperByte;
             }
 
         } else {
@@ -1128,7 +1130,7 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
                 uint8_t pixels[16];
                 SCLDVideo::expandStandardByte(bmp, att, pixels);
                 uint8_t* dst = out + col * 16;
-                for (int i = 0; i < 16; i++) dst[i] = zxColor(pixels[i], bright);
+                for (int i = 0; i < 16; i++) dst[i ^ 2] = zxColor(pixels[i], bright);
             }
 
         }

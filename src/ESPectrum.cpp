@@ -714,10 +714,18 @@ void ESPectrum::setup() {
     // MEMORY SETUP
     //=======================================================================================
 
+#ifdef ESP2068_FORCE_2068
+    // Hardware bring-up build (pio run -e fabgl2068): there is no OSD menu
+    // entry for the TS2068 yet, so boot straight into it.
+    Config::arch = "2068";
+#endif
+
     MemESP::Init();
     SCLD::allocateMemory(); // TS2068 HOME ROM/RAM backing store — see SCLD.h
 
     if (Config::arch == "2068") {
+        // The SD card is otherwise only mounted on first use, later in boot.
+        FileUtils::initFileSystem();
         // Fixed conventional SD paths pending real OSD file-picker wiring
         // (Phase 3, PLAN.md) — see RomLoader.h. Missing files are not
         // fatal: HOME ROM stays zeroed placeholder memory (already the

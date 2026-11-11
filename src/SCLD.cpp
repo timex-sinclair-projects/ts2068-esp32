@@ -49,7 +49,12 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 static inline uint8_t* scld_alloc8k() { return (uint8_t*) calloc(0x2000, 1); }
 #else
 #include "esp_heap_caps.h"
-static inline uint8_t* scld_alloc8k() { return (uint8_t*) heap_caps_calloc(0x2000, 1, MALLOC_CAP_8BIT); }
+// PSRAM first when there is any: the TS2068's 512-wide VGA mode needs most
+// of the internal DMA-capable RAM for its line buffers.
+static inline uint8_t* scld_alloc8k() {
+    uint8_t* p = (uint8_t*) heap_caps_calloc(0x2000, 1, MALLOC_CAP_SPIRAM);
+    return p ? p : (uint8_t*) heap_caps_calloc(0x2000, 1, MALLOC_CAP_8BIT);
+}
 #endif
 
 uint8_t SCLD::mmuSelect = 0x00;
