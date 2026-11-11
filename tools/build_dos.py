@@ -41,6 +41,10 @@ HEADER = os.path.join(ROOT, "include", "DosRom.h")
 
 POCKET = 0x3CDC
 HOOKS = 0x1800
+DEAD = 0x1488
+DEAD_STOCK = ("cd 74 13 30 e1 c1 0b 78 b1 20 db d5 eb cd b9 25 eb 46 0e 88 23 23 5e 23 56 62 6b "
+              "3a cb 5c 5f 16 00 d5 e5 c5 2a 65 5c 4e 2b 22 65 5c 06 00 03 03 c5 01 00 00 c5 cd "
+              "d0 65 d1 7a c6 80 57 e1 c9")
 
 
 def jp(addr):
@@ -51,7 +55,8 @@ def call(addr):
     return bytes([0xCD, addr & 0xFF, addr >> 8]).hex()
 
 
-def home_patches(sym, pocket):
+def home_patches(sym, pocket, dead):
+    stock = bytes.fromhex(DEAD_STOCK)[:len(dead)].hex()
     return [
         (0x1946, "d0 c0 c4 c8", "d2 c2 c6 ca",
          "the syntax entries of CAT, FORMAT, MOVE, ERASE: skip the stock 0Ah 2Ch to "
@@ -70,6 +75,38 @@ def home_patches(sym, pocket):
          "file, and LIST, LIST n, LIST #n go back to 1545h (T_ADDR 19B0h says LIST)"),
         (POCKET, None, pocket.hex(),
          "the switch to the DOS ROM and back, in the genuine FFh filler before CHRSET"),
+        (0x19D0, "03 9d 1e", "05 d6 25",
+         "RESTORE's parameter list: class 03h, 1E9Dh -> class 05h, 25D6h: RESTORE #n rewinds "
+         "a file channel, and RESTORE, RESTORE n go back to 1E9Dh (T_ADDR 19D1h says RESTORE)"),
+        (DEAD, stock, dead.hex(),
+         "OPEN #/CLOSE #'s trampolines into the DOS ROM, an F record's output and input "
+         "routines, OPEN #'s syntax, in a dead SYSCON remnant (TS-Pico uses it the same way)"),
+        (0x145E, "cd 65 14", call(sym["T_OPEN"]),
+         "OPEN #: CALL 1465h -> CALL T_OPEN: \"f:name\" builds an F record, K/S/P go on to 1465h"),
+        (0x13A5, "cd be 13", call(sym["T_CLOSE"]),
+         "CLOSE #: CALL 13BEh -> CALL T_CLOSE: an F record is closed (the stock 13BEh would "
+         "run off its K/S/P table), K/S/P go on to 13BEh"),
+        (0x1438, "cd 69 25", call(sym["T_OSYN"]),
+         "OPEN #'s syntax pass: CALL 2569h (skip the rest) -> CALL T_OSYN, which checks "
+         ",\"mode\"[,length] and stores the hidden number"),
+        (0x1461, "73 23 72 c9", None, "anchor: OPEN # stores DE in the STRMS entry after 145Eh"),
+        (0x1465, "e5 cd af 2f 0b", None, "anchor: OPEN # of K/S/P (H_OPEN_STOCK)"),
+        (0x13A8, "01 00 00 11 e2 a3 eb 19", None,
+         "anchor: CLOSE #'s reset of the STRMS entry at HL (H_CLOSE_RESET)"),
+        (0x13BE, "e5 78 fe 80 30 14", None, "anchor: CLOSE # of K/S/P (H_CLOSE_STOCK)"),
+        (0x140F, "cd 1e 1f 32 cb 5c fe 10 38 02 cf 17", None,
+         "anchor: the stream on the calculator stack, Report O past 15 (H_STREAM)"),
+        (0x12BB, "e5 cd bb 1f e1 cd ca 12", None, "anchor: MAKE-ROOM (H_MAKE_ROOM)"),
+        (0x1750, "c5 78 2f 47 79 2f 4f 03", None, "anchor: RECLAIM (H_RECLAIM)"),
+        (0x1F23, "cd 60 31 38 01 c8", None, "anchor: FIND-INT2 (H_FIND_INT2)"),
+        (0x1C51, "cd 89 28 c8 ef a0 38 c9", None, "anchor: USE-ZERO (H_USE_ZERO)"),
+        (0x1E9D, "cd 23 1f 2a bc 5c", None, "anchor: RESTORE after class 03h (H_RESTORE)"),
+        (0x11D9, "cd e1 11 d8 28 fa cf 07", None,
+         "anchor: WAIT-KEY: an input routine's NC NZ is Report 8 (CH_IN relies on it)"),
+        (0x11ED, "d9 e5 2a 51 5c", None, "anchor: RST 10h output through CURCHL (CH_OUT)"),
+        (0x0018, "2a 5d 5c 7e", None, "anchor: RST 18h, GET-CHAR (T_OSYN)"),
+        (0x0020, "cd 74 00 18 f7", None, "anchor: RST 20h, NEXT-CHAR (T_OSYN)"),
+        (0x1433, "cd 89 28 20 06", None, "anchor: OPEN #'s comma: 1438h on the syntax pass only"),
         (0x0010, "c3 ed 11", None, "anchor: RST 10h, print A (H_PRINT_A)"),
         (0x0A02, "f3 06 b0 21 00 40", None, "anchor: COPY, the screen to the printer (H_COPY)"),
         (0x1545, "3e 02 fd 36 02 00", None, "anchor: LIST (H_LIST)"),
@@ -173,15 +210,18 @@ def main():
 
     dos = open(os.path.join(OUT, "dos.rom"), "rb").read()
     pocket = open(os.path.join(OUT, "home_pocket.bin"), "rb").read()
+    dead = open(os.path.join(OUT, "home_dead.bin"), "rb").read()
     hooks = open(os.path.join(OUT, "exrom_hooks.bin"), "rb").read()
     if len(dos) != 0x4000:
         sys.exit(f"dos.rom is {len(dos)} bytes, not 16K")
     if POCKET + len(pocket) > 0x3D00:
         sys.exit("HOME's pocket runs into CHRSET")
+    if DEAD + len(dead) > 0x14C7:
+        sys.exit("HOME's channel stubs run into OPEN #'s table at 14C7h")
     if HOOKS + len(hooks) > 0x1C00:
         sys.exit("the EXROM hooks run out of BLK2's filler")
 
-    hp = home_patches(sym1, pocket)
+    hp = home_patches(sym1, pocket, dead)
     xp = exrom_patches(sym2, hooks)
     for i, (home_name, exrom_name) in enumerate(PAIRS):
         home = open(os.path.join(BASE, home_name), "rb").read()
@@ -199,7 +239,7 @@ def main():
         print(f"  HOME  {addr:04X}h {len(new):3d} bytes  {why[:72]}")
     for addr, old, new, why in exrom_list:
         print(f"  EXROM {addr:04X}h {len(new):3d} bytes  {why[:72]}")
-    used = max(i for i, b in enumerate(dos[:POCKET]) if b != 0xFF) + 1
+    used = max(i for i, b in enumerate(dos[:DEAD]) if b != 0xFF) + 1
     print(f"  DOS ROM: module 0100h-{used - 1:04X}h ({used - 0x100} bytes), CRC {zlib.crc32(dos):08x}")
     print(f"  EXROM hooks: {HOOKS:04X}h-{HOOKS + len(hooks) - 1:04X}h ({len(hooks)} bytes)")
 

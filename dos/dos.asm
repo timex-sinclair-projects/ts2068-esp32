@@ -7,7 +7,8 @@
 ;           2068's own bank registers (ports F4h, FFh) are never touched,
 ;           so a cartridge or the EXROM is exactly as it was afterwards.
 ;   SIDE=1  HOME's side of the switch: the bytes that go in HOME's free
-;           3CDCh-3CFFh pocket (genuine FFh filler).
+;           3CDCh-3CFFh pocket (genuine FFh filler), and the channel stubs
+;           and hook trampolines in HOME's dead 1488h-14C6h.
 ;   SIDE=2  the EXROM's tape hooks, in its unused 1800h-1BFFh block (BLK2,
 ;           FFh filler in every EXROM): PGPSTR's call in SLVM, R_TAPE,
 ;           W_TAPE and SAVE. They make service calls directly; the EXROM
@@ -63,6 +64,12 @@ SVC_LIST        EQU $0E            ; DE/BC: show a file
 SVC_ANSWER      EQU $0F            ; L = 1 Y, 0 N, 2 another key
 SVC_END         EQU $10            ; the report the text ends with, or 0
 OUT_ASK         EQU $01            ; CAT_CHAR: a question; read a key, then ANSWER
+SVC_CH_OPEN     EQU $11            ; DE/BC the spec, IX/HL the mode; (STREAM_N), (CH_ARG)
+SVC_CH_OUT      EQU $12            ; E = a byte for CURCHL's channel
+SVC_CH_IN       EQU $13            ; CURCHL's next byte at CH_BYTE (0), CH_EOF (1)
+SVC_CH_CLOSE    EQU $14            ; L = the stream
+SVC_CH_RESTORE  EQU $15            ; L = the stream: back to its start
+SVC_CH_CAT      EQU $16            ; CAT #s: HL, DE/BC as CAT_OPEN; IX = the stream
 
 ; Answers of the tape services, below the report codes (all 4 or more).
 T_NOT_OURS      EQU 0              ; the stock routine runs
@@ -78,9 +85,13 @@ T_ASK           EQU 3              ; TAPE_NAME: the same, once PROMPT_BUF (the
 NAME_LEN        EQU $5E0F
 NAME_BUF        EQU $5E10          ; 10 bytes
 PROMPT_BUF      EQU $5E20          ; up to 64 bytes and a 0
+CH_ARG          EQU $5E0C          ; OPEN #'s record length, for CH_OPEN
+CH_BYTE         EQU $5E0E          ; CH_IN's byte
 
 ; --- RST 8 codes (the report is code + 1) --------------------------------------
 R_NONSENSE      EQU $0B            ; C Nonsense in BASIC
+R_MEMORY        EQU $03            ; 4 Out of memory
+R_STREAM        EQU $17            ; O Invalid stream
 
 ; --- The 2068 -------------------------------------------------------------------
 CH_ADD          EQU $5C5D          ; the next character of the BASIC line
@@ -104,6 +115,12 @@ TOK_CHRS        EQU $C2
 T_ADDR          EQU $5C74
 T_LIST          EQU $19B0          ; T_ADDR in a LIST statement: its parameter list
                                    ;   (19AFh) + 1, where class 05h leaves it
+T_RESTORE       EQU $19D1          ; T_ADDR in a RESTORE statement (19D0h + 1)
+STREAM_N        EQU $5CCB          ; the stream OPEN #/CLOSE # work on (140Fh sets it)
+STRMS           EQU $5C10          ; streams -3..15, two bytes each
+CHANS           EQU $5C4F
+CURCHL          EQU $5C51
+PROG            EQU $5C53
 
 H_PRINT_A       EQU $0010          ; HOME: RST 10h, print A on the current channel
 H_ERROR_3       EQU $0055          ; HOME: LD (IY+0),L / LD SP,(ERR_SP) / JP 1354h,
@@ -117,6 +134,17 @@ H_EXPT_STR      EQU $1BEF          ; HOME: class 0Ah, a string expression
 H_EXPT_STR_ONLY EQU $1BEF          ; (the same: class 0Ah doesn't check the end)
 H_COPY          EQU $0A02          ; HOME: COPY, the screen to the printer
 H_LIST          EQU $1545          ; HOME: LIST, class 05h: it parses its own #n and n
+H_RESTORE       EQU $1E9D          ; HOME: RESTORE after class 03h (the number stacked)
+H_USE_ZERO      EQU $1C51          ; HOME: a 0 on the calculator stack at run time
+H_FIND_INT2     EQU $1F23          ; HOME: the number on the stack -> BC (Report B)
+H_STREAM        EQU $140F          ; HOME: the number on the stack is a stream: Report O
+                                   ;   past 15; (STREAM_N), HL = its STRMS entry, BC = it
+H_MAKE_ROOM     EQU $12BB          ; HOME: BC bytes after (HL), Report 4
+H_RECLAIM       EQU $1750          ; HOME: remove BC bytes at HL
+H_OPEN_STOCK    EQU $1465          ; HOME: OPEN # of K, S or P (HL = the STRMS entry)
+H_CLOSE_STOCK   EQU $13BE          ; HOME: CLOSE # of K, S or P (HL, BC)
+H_CLOSE_RESET   EQU $13A8          ; HOME: CLOSE #'s reset of the STRMS entry at HL
+H_EXPT_STR_RT   EQU $1BEF          ; (H_EXPT_STR)
 
 ; The EXROM (SIDE=2).
 X_ERROR         EQU $0010          ; EXROM: XRST8 after it has fetched the code:
@@ -142,6 +170,16 @@ L_H_DONE        EQU POCKET+8       ; 3CE4h  HOME: back from the module
 L_D_HOMECALL    EQU POCKET+22      ; 3CF2h  the DOS ROM: HOMECALL
 L_H_CALL        EQU POCKET+24      ; 3CF4h  HOME: HOMECALL's HOME half
 L_D_CALL_RET    EQU POCKET+31      ; 3CFBh  the DOS ROM: HOMECALL's RET
+
+; HOME's dead 1488h-14C6h (a SYSCON remnant nothing reaches; TS-Pico puts its
+; trampolines there too): the hooks' switch, and the channel stubs.
+DEAD            EQU $1488
+DEAD_END        EQU $14C7          ; 14C7h is OPEN #'s K/S/P table
+L_D_HOOK        EQU DEAD+9         ; 1491h  the DOS ROM: CALL D_HOOK / OUT (P_DOS_OFF),A
+L_H_HOOKED      EQU DEAD+14        ; 1496h  HOME: back from D_HOOK
+A_CH_OUT        EQU DEAD+20        ; 149Ch  HOME: an F record's output routine
+A_CH_IN         EQU DEAD+29        ; 14A5h  HOME: its input routine
+A_T_XHL         EQU DEAD+56        ; 14C0h  HOME: EX DE,HL / JP (IX)
 
         IF SIDE == 1
 
@@ -189,6 +227,65 @@ H_JP_HL:
 
         ; HOME's side of the pocket only (build_dos.py patches these bytes).
         SAVEBIN "out/home_pocket.bin",POCKET,$-POCKET
+
+        ORG     DEAD
+; T_OPEN -- OPEN #'s CALL 1465h at 145Eh comes here: HL = the STRMS entry,
+; the spec string on the calculator stack, CH_ADD on what follows it.
+T_OPEN: ld      a,1
+        jr      T_GO
+; T_CLOSE -- CLOSE #'s CALL 13BEh at 13A5h: BC = the stream's offset, HL =
+; its STRMS entry.
+T_CLOSE:
+        ld      a,2
+; T_GO -- into the DOS ROM's D_HOOK with A = 1 or 2. It comes back Z to
+; return (to the stock routine, if it pushed one), NZ with a report code.
+T_GO:   di
+        out     (P_DOS_ON),a
+        ASSERT  $ == L_D_HOOK
+        ds      5,$FF              ; the DOS ROM's CALL D_HOOK / OUT (P_DOS_OFF),A
+        ASSERT  $ == L_H_HOOKED
+        ei
+        ret     z
+CH_ERR: ld      l,a
+        jp      H_ERROR_3
+; CH_OUT -- an F record's output routine: A = the byte (RST 10h).
+        ASSERT  $ == A_CH_OUT
+CH_OUT: ld      e,a
+        ld      a,SVC_CH_OUT
+        out     (P_SVC),a
+        and     a
+        ret     z
+        jr      CH_ERR
+; CH_IN -- its input routine: C with A = a byte; NC NZ at the end of the
+; file, which WAIT-KEY (11D9h) makes Report 8 and INKEY$ # an empty string.
+        ASSERT  $ == A_CH_IN
+CH_IN:  ld      a,SVC_CH_IN
+        out     (P_SVC),a
+        cp      2
+        jr      nc,CH_ERR
+        and     a
+        ret     nz
+        ld      a,(CH_BYTE)
+        scf
+        ret
+; T_OSYN -- OPEN #'s syntax pass, at 1438h, with CH_ADD on the comma after
+; the spec: the mode (a string), then perhaps a comma and the record length.
+; The stock 2569h skipped the rest unchecked, and with it the hidden form of
+; a number. 143Bh's CHECK-END then wants the end of the statement.
+T_OSYN: rst     20h
+        call    H_EXPT_STR
+        rst     18h
+        cp      ','
+        ret     nz
+        rst     20h
+        jp      H_EXPT_1NUM
+; T_XHL -- for HOMECALL: call IX with HL = DE (HOMECALL can't pass HL).
+        ASSERT  $ == A_T_XHL
+T_XHL:  ex      de,hl
+        jp      (ix)
+        ASSERT  $ <= DEAD_END
+
+        SAVEBIN "out/home_dead.bin",DEAD,$-DEAD
 
         ENDIF
 
@@ -391,6 +488,11 @@ HOMECALL:
         ASSERT  $ == L_D_CALL_RET
         ret
 
+        ORG     L_D_HOOK
+        call    D_HOOK
+        out     (P_DOS_OFF),a      ; flags and registers survive the OUT
+        ASSERT  $ == L_H_HOOKED
+
 ;------------------------------------------------------------------------------
 ; The module
 ;------------------------------------------------------------------------------
@@ -407,6 +509,11 @@ DOS_MAIN:
         and     a
         sbc     hl,de
         jp      z,LIST
+        ld      hl,(T_ADDR)
+        ld      de,T_RESTORE
+        and     a
+        sbc     hl,de
+        jp      z,RESTORE
         ld      a,b
         cp      TOK_CAT
         jr      z,CAT
@@ -442,12 +549,46 @@ CAT:    call    AT_END
         call    RUNTIME
         ret     z                  ; the syntax pass: accepted
         jr      .open
-.arg:   call    EXPT_STR_END
+.arg:   cp      '#'
+        jr      z,CAT_CH
+        call    EXPT_STR_END
         ret     z
         call    POP_STR
         ld      hl,1
 .open:  ld      a,SVC_CAT_OPEN
         jp      RUN_OUT
+
+;------------------------------------------------------------------------------
+; CAT #s         the listing CAT gives, as text into the file open on stream s
+; CAT #s;"x"     CAT "x"'s
+;------------------------------------------------------------------------------
+CAT_CH: call    NEXT_CHAR
+        ld      hl,H_EXPT_1NUM
+        call    HOMECALL
+        call    AT_END
+        ld      hl,0
+        jr      z,.end
+        cp      ';'
+        jp      nz,NONSENSE
+        call    NEXT_CHAR
+        call    EXPT_STR_END
+        ret     z
+        call    POP_STR
+        ld      hl,1
+        jr      .go
+.end:   call    RUNTIME
+        ret     z
+.go:    push    hl
+        push    de
+        push    bc
+        call    F_STREAM           ; L = the stream, or Report O
+        push    hl
+        pop     ix
+        pop     bc
+        pop     de
+        pop     hl
+        ld      a,SVC_CH_CAT
+        jp      SVC_ONLY
 
 ;------------------------------------------------------------------------------
 ; FORMAT "x.tap" / FORMAT "x"   a new, empty TAP, mounted
@@ -607,8 +748,9 @@ GET_KEY:
         jr      .down
 
 ;------------------------------------------------------------------------------
-; CLOSE #*    unmount the TAP (and, later, close every file)
-; CLOSE #n    the stock CLOSE #: class 06h here, then 139Fh at run time
+; CLOSE #*    close every file channel and unmount the TAP
+; CLOSE #n    the stock CLOSE #: class 06h here, then 139Fh at run time (an F
+;             record comes back to D_CLOSE through 13A5h)
 ;------------------------------------------------------------------------------
 CLOSE:  call    SKIP_SPACES
         cp      '*'
@@ -618,6 +760,19 @@ CLOSE:  call    SKIP_SPACES
         jp      nz,NONSENSE
         call    RUNTIME
         ret     z
+        xor     a
+.files: push    af
+        ld      (STREAM_N),a
+        call    STRMS_HL
+        ld      c,(hl)
+        inc     hl
+        ld      b,(hl)
+        call    F_RECORD
+        call    z,CLOSE_REC        ; its report waits: the rest close first
+        pop     af
+        inc     a
+        cp      16
+        jr      c,.files
         ld      a,SVC_CLOSE_ALL
         jp      SVC_ONLY
 .stream:
@@ -629,6 +784,342 @@ CLOSE:  call    SKIP_SPACES
         ret     z
         ld      hl,H_CLOSE
         scf
+        ret
+
+;------------------------------------------------------------------------------
+; RESTORE #n            back to the start of the file open on stream n
+; RESTORE, RESTORE n    the stock RESTORE: class 03h's part here, then 1E9Dh
+;------------------------------------------------------------------------------
+RESTORE:
+        call    AT_END
+        jr      z,.zero
+        cp      '#'
+        jr      z,.chan
+        ld      hl,H_EXPT_1NUM
+        call    HOMECALL
+        call    AT_END
+        jp      nz,NONSENSE
+        jr      .home
+.zero:  ld      hl,H_USE_ZERO      ; nothing on the syntax pass
+        call    HOMECALL
+.home:  call    RUNTIME
+        ret     z
+        ld      hl,H_RESTORE
+        scf
+        ret
+.chan:  call    NEXT_CHAR
+        ld      hl,H_EXPT_1NUM
+        call    HOMECALL
+        call    AT_END
+        jp      nz,NONSENSE
+        call    RUNTIME
+        ret     z
+        call    F_STREAM
+        ld      a,SVC_CH_RESTORE
+        jp      SVC_ONLY
+
+;------------------------------------------------------------------------------
+; File channels: OPEN # and CLOSE #'s hooks
+;
+; An F record is 6 bytes in CHANS, just before its closing 80h: CH_OUT,
+; CH_IN (HOME's stubs, so the record holds no address that moves), 'F' and
+; the stream. The engine keeps the file. Sixteen records keep every STRMS
+; offset below 80h, as CHAN-OPEN (1239h) needs.
+;------------------------------------------------------------------------------
+REC_LEN         EQU 6
+
+; D_HOOK -- T_GO comes here with A = 1 (OPEN #, 145Eh) or 2 (CLOSE #, 13A5h)
+; and their registers. Returns Z (with the stock routine's address pushed
+; under the return, when the channel is K, S or P), or NC NZ with a report.
+D_HOOK: ld      (DOS_SP),sp
+        dec     a
+        jr      z,D_OPEN
+
+; D_CLOSE -- BC = the stream's offset, HL = its STRMS entry. An F record:
+; closed, then HL = the entry for 13A8h to reset.
+D_CLOSE:
+        push    hl
+        call    F_RECORD
+        jr      nz,.stock
+        pop     de
+        call    CLOSE_REC
+        and     a
+        jp      nz,REPORT
+        call    STRMS_HL
+        xor     a
+        ret
+.stock: pop     hl
+        ld      c,(hl)
+        inc     hl
+        ld      b,(hl)
+        dec     hl
+        ld      de,H_CLOSE_STOCK
+        jr      HOOK_STOCK
+
+; HOOK_STOCK -- go back to HOME, on to the stock routine at DE.
+HOOK_STOCK:
+        pop     ix                 ; the return to L_D_HOOK's OUT
+        push    de
+        push    ix
+        xor     a
+        ret
+
+; D_OPEN -- the spec is on the calculator stack. "x:..." is the engine's; K,
+; S, P and anything else go to the stock 1465h.
+D_OPEN: ld      hl,(STKEND)
+        dec     hl
+        ld      b,(hl)
+        dec     hl
+        ld      c,(hl)
+        dec     hl
+        ld      d,(hl)
+        dec     hl
+        ld      e,(hl)             ; DE/BC: the spec, still stacked
+        ld      a,b
+        and     a
+        jr      nz,.long
+        ld      a,c
+        cp      2
+        jr      c,.stock
+.long:  inc     de
+        ld      a,(de)
+        cp      ':'
+        jr      z,.ours
+.stock: call    STRMS_HL
+        ld      de,H_OPEN_STOCK
+        jp      HOOK_STOCK
+.ours:  ld      hl,0
+        ld      (CH_ARG),hl
+        call    AT_END
+        jr      z,.nomode
+        cp      ','
+        jp      nz,NONSENSE
+        call    NEXT_CHAR
+        ld      hl,H_EXPT_STR
+        call    HOMECALL           ; the mode
+        call    SKIP_SPACES
+        cp      ','
+        jr      nz,.endarg
+        call    NEXT_CHAR
+        ld      hl,H_EXPT_1NUM
+        call    HOMECALL           ; the record length
+        ld      hl,H_FIND_INT2
+        call    HOMECALL
+        ld      (CH_ARG),bc
+.endarg:
+        call    AT_END
+        jp      nz,NONSENSE
+        call    POP_STR            ; the mode
+        jr      .spec
+.nomode:
+        ld      bc,0
+.spec:  push    de
+        push    bc
+        call    POP_STR            ; the spec
+        push    de
+        push    bc
+        ; the record goes where CHANS' 80h is (on the 2068 a spare byte may
+        ; sit between it and PROG)
+        call    CHANS_END
+        push    hl
+        ld      de,(CHANS)
+        and     a
+        sbc     hl,de
+        ld      de,REC_LEN+1       ; its offset, and the next one's, below 80h
+        add     hl,de
+        ld      a,h
+        and     a
+        jr      nz,.full
+        ld      a,l
+        cp      $80
+        jr      c,.room
+.full:  ld      a,R_MEMORY
+        jp      REPORT
+.room:  pop     de
+        push    de                 ; [record]
+        dec     de                 ; MAKE-ROOM opens the space after (HL)
+        ld      bc,REC_LEN
+        ld      ix,H_MAKE_ROOM
+        ld      hl,A_T_XHL
+        call    HOMECALL
+        ; Everything above the record moved up REC_LEN, the strings too.
+        pop     hl                 ; the record
+        pop     bc
+        pop     de
+        ex      de,hl
+        ld      a,REC_LEN
+        call    ADD_HL_A
+        ex      de,hl              ; DE/BC: the spec
+        pop     ix                 ; the mode's length
+        ex      (sp),hl            ; [record], HL = the mode's text
+        ld      a,REC_LEN
+        call    ADD_HL_A
+        push    ix
+        ex      (sp),hl            ; HL = its length
+        pop     ix                 ; IX = its text
+        ld      a,SVC_CH_OPEN
+        out     (P_SVC),a
+        pop     hl                 ; the record
+        and     a
+        jr      z,.made
+        push    af
+        ex      de,hl
+        ld      bc,REC_LEN
+        ld      ix,H_RECLAIM
+        ld      hl,A_T_XHL
+        call    HOMECALL           ; no file: no record
+        pop     af
+        jp      REPORT
+.made:  push    hl
+        ld      (hl),low A_CH_OUT
+        inc     hl
+        ld      (hl),high A_CH_OUT
+        inc     hl
+        ld      (hl),low A_CH_IN
+        inc     hl
+        ld      (hl),high A_CH_IN
+        inc     hl
+        ld      (hl),'F'
+        inc     hl
+        ld      a,(STREAM_N)
+        ld      (hl),a
+        pop     hl
+        ld      de,(CHANS)
+        and     a
+        sbc     hl,de
+        inc     hl
+        ex      de,hl              ; DE = the offset, which 1461h stores
+        call    STRMS_HL
+        xor     a
+        ret
+
+; CLOSE_REC -- HL = an F record, BC = its offset, (STREAM_N) its stream. The
+; engine closes the file; the record goes, every later offset moves down,
+; CURCHL leaves it for S, and the STRMS entry is reset. A = the engine's answer.
+CLOSE_REC:
+        push    hl
+        push    bc
+        ld      bc,5
+        add     hl,bc
+        ld      l,(hl)             ; the stream
+        ld      a,SVC_CH_CLOSE
+        out     (P_SVC),a
+        pop     bc
+        pop     hl
+        push    af                 ; [answer]
+        push    hl                 ; [record]
+        ld      hl,STRMS
+        ld      a,19
+.fix:   push    af
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)             ; DE = an entry, HL on its high byte
+        bit     7,d
+        jr      nz,.next           ; not in CHANS
+        push    hl
+        ex      de,hl
+        and     a
+        sbc     hl,bc
+        jr      c,.keep            ; below ours
+        jr      z,.keep            ; ours: 13A8h resets it
+        add     hl,bc
+        ld      de,-REC_LEN
+        add     hl,de
+        ex      de,hl
+        pop     hl
+        ld      (hl),d
+        dec     hl
+        ld      (hl),e
+        inc     hl
+        jr      .next
+.keep:  pop     hl
+.next:  inc     hl
+        pop     af
+        dec     a
+        jr      nz,.fix
+        pop     de                 ; the record
+        ld      hl,(CURCHL)
+        and     a
+        sbc     hl,de
+        push    hl                 ; [Z: CURCHL is the record]
+        ld      bc,REC_LEN
+        ld      ix,H_RECLAIM
+        ld      hl,A_T_XHL
+        call    HOMECALL
+        pop     hl
+        ld      a,h
+        or      l
+        jr      nz,.reset
+        ld      a,2                ; the upper screen
+        ld      hl,H_CHAN_OPEN
+        call    HOMECALL
+.reset: call    STRMS_HL
+        ex      de,hl
+        ld      ix,H_CLOSE_RESET
+        ld      hl,A_T_XHL
+        call    HOMECALL
+        pop     af
+        ret
+
+; F_STREAM -- the number on the calculator stack is a stream open to an F
+; record: L = the stream; otherwise Report O.
+F_STREAM:
+        ld      hl,H_STREAM
+        call    HOMECALL           ; HL = the entry, BC = the offset
+        call    F_RECORD
+        ld      a,R_STREAM
+        jp      nz,REPORT
+        ld      a,(STREAM_N)
+        ld      l,a
+        ret
+
+; F_RECORD -- BC = a STRMS offset. Z if it is an F record, HL = the record.
+F_RECORD:
+        ld      a,b
+        or      c
+        jr      z,.no
+        bit     7,b
+        jr      nz,.no
+        ld      hl,(CHANS)
+        add     hl,bc
+        dec     hl
+        push    hl
+        inc     hl
+        inc     hl
+        inc     hl
+        inc     hl
+        ld      a,(hl)
+        pop     hl
+        cp      'F'
+        ret
+.no:    or      1
+        ret
+
+; STRMS_HL -- HL = stream (STREAM_N)'s STRMS entry.
+STRMS_HL:
+        ld      a,(STREAM_N)
+        add     a,a
+        add     a,low (STRMS+6)
+        ld      l,a
+        ld      h,high STRMS
+        ret
+
+; CHANS_END -- HL = CHANS' closing 80h.
+CHANS_END:
+        ld      hl,(PROG)
+        dec     hl
+        ld      a,(hl)
+        cp      $80
+        ret     z
+        dec     hl
+        ret
+
+; ADD_HL_A -- HL += A.
+ADD_HL_A:
+        add     a,l
+        ld      l,a
+        ret     nc
+        inc     h
         ret
 
 ;------------------------------------------------------------------------------
@@ -737,7 +1228,7 @@ POP_STR:
         ld      (STKEND),hl
         ret
 
-        ASSERT  $ <= POCKET
+        ASSERT  $ <= DEAD          ; the hooks' switch sits at 1491h
 
         SAVEBIN "out/dos.rom",0,$4000
 

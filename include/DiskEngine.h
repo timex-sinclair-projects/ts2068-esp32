@@ -95,6 +95,19 @@ public:
     static const uint8_t SVC_ANSWER = 0x0F;     // L = 1 Y, 0 N (stop), 2 any other key
     static const uint8_t SVC_END = 0x10;        // the report the text ends with, or OK
     static const uint8_t OUT_ASK = 0x01;        // in the text: a question, read a key
+    // Phase 5's file channels. OPEN #n,"f:name" puts a 6-byte record in
+    // CHANS (output and input: HOME's stubs at CH_OUT_STUB/CH_IN_STUB;
+    // 'F'; the stream), and the engine keeps the file. The stubs call
+    // CH_OUT and CH_IN, which find the stream through CURCHL.
+    static const uint8_t SVC_CH_OPEN = 0x11;    // DE/BC the spec ("f:name"), IX/HL the mode (HL 0:
+                                                //   none); (STREAM_N) the stream, (CH_ARG) the
+                                                //   record length (0: none)
+    static const uint8_t SVC_CH_OUT = 0x12;     // E = a byte for CURCHL's channel
+    static const uint8_t SVC_CH_IN = 0x13;      // CURCHL's next byte: OK with it at CH_BYTE, CH_EOF
+    static const uint8_t SVC_CH_CLOSE = 0x14;   // L = the stream
+    static const uint8_t SVC_CH_RESTORE = 0x15; // L = the stream: back to its start
+    static const uint8_t SVC_CH_CAT = 0x16;     // CAT #s: HL, DE/BC as CAT_OPEN; IX = the stream
+    static const uint8_t CH_EOF = 1;            // CH_IN: the end of the file (Report 8)
 
     // The tape functions' answers, below every report code.
     static const uint8_t T_NOT_OURS = 0;        // nothing mounted: the stock tape routine runs
@@ -111,6 +124,13 @@ public:
     static const uint16_t NAME_LEN = 0x5E0F;
     static const uint16_t NAME_BUF = 0x5E10;    // 10 bytes
     static const uint16_t PROMPT_BUF = 0x5E20;  // up to 64 bytes, 0-ended
+    static const uint16_t CH_ARG = 0x5E0C;      // OPEN #'s record length, 2 bytes
+    static const uint16_t CH_BYTE = 0x5E0E;     // CH_IN's byte
+    static const uint16_t STREAM_N = 0x5CCB;    // the stream OPEN #/CLOSE # work on (HOME 140Fh)
+    static const uint16_t CURCHL = 0x5C51;
+    static const uint16_t CHANS = 0x5C4F;
+    static const uint16_t STRMS = 0x5C10;       // streams -3..15, 2 bytes each
+    static const int STREAMS = 16;
 
     // Answers: 0, or the RST 8 code of the report the ROM raises (the
     // report is the code + 1: 0Bh is C, 0Eh is F).
@@ -122,6 +142,9 @@ public:
     static const uint8_t R_IO = 0x12;           // J Invalid I/O device: no card, a read failed,
                                                 //   CAT "" with nothing mounted
     static const uint8_t R_UNKNOWN_FN = 0x0B;   // a function this engine doesn't know
+    static const uint8_t R_MEMORY = 0x03;       // 4 Out of memory
+    static const uint8_t R_EOF = 0x07;          // 8 End of file
+    static const uint8_t R_STREAM = 0x17;       // O Invalid stream: not a file channel
 
     // The most entries a CAT listing shows; the rest are counted ("and 12
     // more").
@@ -183,6 +206,17 @@ public:
     // cut to 10.
     static std::string tapeNameOf(const std::string& path);
 
+    // File channels, by stream (0-15); for the tests (service() calls
+    // them). chIn answers OK with the byte in `c`, CH_EOF, or a report.
+    uint8_t chOpen(int stream, const std::string& spec, const std::string& mode, int reclen);
+    uint8_t chOut(int stream, uint8_t c);
+    uint8_t chIn(int stream, uint8_t& c);
+    uint8_t chClose(int stream);
+    void chCloseAll();
+    uint8_t chRestore(int stream);
+    uint8_t chCat(int stream, bool arg, const std::string& name);
+    bool chIsOpen(int stream) const { return stream >= 0 && stream < STREAMS && chans_[stream].f; }
+
     // The listing CAT "x.tap" and CAT "" print: the TAP's blocks.
     uint8_t buildTapListing(const std::string& path2068, std::string& out);
 
@@ -220,6 +254,42 @@ private:
     std::vector<std::string> nativeBlocks_; // LOAD: flag, data, checksum
     size_t nativePos_ = 0;
     std::string saveHeader_;               // SAVE: the 17-byte tape header
+
+    // An open file channel.
+    struct Channel {
+        FILE* f = nullptr;
+        std::string path;          // 2068 path
+        char mode = 0;             // r w a u
+        bool binary = false;
+        int reclen = 0;            // 0: a stream (TAB n is byte n)
+        long pos = 0;              // a stream: where the next read or write goes
+        long filePos = -1;         // where the FILE is (-1: unknown)
+        long size = -1;            // the file's size (-1: not yet asked)
+        bool lastWrite = false;
+        int ctl = 0;               // parameter bytes still to come for ctlCode
+        uint8_t ctlCode = 0, ctlLo = 0;
+        int column = 0;            // text: for the comma
+        bool suppress = true;      // text: no space before the next keyword
+        long record = 1;           // a record file: the next record
+        bool recOpen = false;      // being written
+        std::string recBuf;        // what it has so far
+        bool query = false;        // TAB 0: the next read is the count
+        std::string pending;       // bytes CH_IN hands out first
+        size_t pendingPos = 0;
+        bool lastInCR = true;      // text: the last byte read ended a line
+    };
+    Channel chans_[STREAMS];
+    uint8_t chWrite(Channel& c, const char* bytes, size_t n);
+    uint8_t chWriteAt(Channel& c, long at, const char* bytes, size_t n);
+    uint8_t chPut(Channel& c, uint8_t b);
+    uint8_t chSeek(Channel& c, long n);
+    uint8_t chEndRecord(Channel& c);
+    uint8_t chToken(Channel& c, uint8_t code);
+    bool chAt(Channel& c, long p, bool write);
+    long chSize(Channel& c);
+    void chSweep(DiskCpu& cpu, int except);
+    int chStreamOf(DiskCpu& cpu);
+    uint8_t catInto(bool arg, const std::string& name, std::string& out);
 
     std::string hostPath(const std::string& path2068) const;
     static const char* kindOf(const std::string& host, long size);

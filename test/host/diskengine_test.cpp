@@ -3,14 +3,16 @@
 ESP2068 — TS2068 port of ESPectrum
 
 test/host/diskengine_test.cpp — host test for the native disk, Phases 1
-and 2: DiskEngine's CAT listings, TAP mounting and tape services (with a
-fake CPU and a scratch folder), DosDisk's HOME and EXROM patches against
-both stock ROM pairs, and SCLD's DOS ROM overlay.
+to 5: DiskEngine's CAT listings, TAP mounting and tape services, native
+files, file management and file channels (with a fake CPU and a scratch
+folder), DosDisk's HOME and EXROM patches against both stock ROM pairs,
+and SCLD's DOS ROM overlay.
 
 Build and run (from repo root, after tools/build_dos.py):
 
     g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
-        test/host/diskengine_test.cpp src/DiskEngine.cpp src/DosDisk.cpp src/SCLD.cpp \
+        test/host/diskengine_test.cpp src/DiskEngine.cpp src/DiskChannels.cpp src/DosDisk.cpp \
+        src/SCLD.cpp \
         -o /tmp/diskengine_test \
     && /tmp/diskengine_test
 
@@ -128,6 +130,39 @@ static std::vector<std::string> lines(const std::string& text) {
     }
     if (!cur.empty()) out.push_back(cur + "<no CR>");
     return out;
+}
+
+// Everything a channel takes: each byte through chOut.
+static uint8_t chPrint(DiskEngine& eng, int s, const std::string& bytes) {
+    for (unsigned char c : bytes) {
+        uint8_t r = eng.chOut(s, c);
+        if (r != DiskEngine::OK) return r;
+    }
+    return DiskEngine::OK;
+}
+
+// INPUT #s's view: bytes up to a CR (not kept), or the answer that stopped it.
+static std::string chLine(DiskEngine& eng, int s, uint8_t* stop = nullptr) {
+    std::string out;
+    for (int i = 0; i < 100000; i++) {
+        uint8_t c = 0, r = eng.chIn(s, c);
+        if (r != DiskEngine::OK) { if (stop) *stop = r; return out; }
+        if (c == 0x0D) { if (stop) *stop = DiskEngine::OK; return out; }
+        out += (char) c;
+    }
+    return out;
+}
+
+static std::string fileText(const std::string& path) {
+    std::vector<uint8_t> v = readFile(path.c_str());
+    return std::string(v.begin(), v.end());
+}
+
+static std::string tab(uint16_t n) {
+    std::string t = "\x17";
+    t += (char) (n & 0xFF);
+    t += (char) (n >> 8);
+    return t;
 }
 
 int main() {
@@ -665,6 +700,166 @@ int main() {
         check(e.list("bin.dat", out) == DiskEngine::OK && out == "0000 00010268656C6C6F ...hello\r0008 FF               .\r", "LIST a binary file: a hex dump");
         check(e.list("games", out) == DiskEngine::R_PARAM && e.list("*.tap", out) == DiskEngine::R_PARAM, "LIST a folder or a pattern: Q");
         check(e.list("nope", out) == DiskEngine::R_NAME, "LIST a missing file: F");
+    }
+
+    printf("\nFile channels\n");
+    {
+        std::string croot = root + "/ch";
+        mkdir(croot.c_str(), 0755);
+        DiskEngine ce(croot);
+        typedef DiskEngine E;
+        check(ce.chOpen(4, "f:none.txt", "", 0) == E::R_NAME, "OPEN #4,\"f:none.txt\" (read, missing): F");
+        check(ce.chOpen(4, "q:x", "", 0) == E::R_IO, "an unknown device: J");
+        check(ce.chOpen(4, "f:", "w", 0) == E::R_NAME, "no name: F");
+        check(ce.chOpen(4, "f:a.txt", "x", 0) == E::R_PARAM, "a bad mode: Q");
+        check(ce.chOpen(4, "f:a.txt", "wbb", 0) == E::R_PARAM, "a mode too long: Q");
+        check(ce.chOpen(4, "f:a.txt", "a", 10) == E::R_PARAM, "append with a record length: Q");
+        check(ce.chOpen(4, "f:a.txt", "w", 255) == E::R_PARAM, "a record length over 254: Q");
+
+        // Text: CR -> LF, keywords expanded, controls dropped, the comma to column 16.
+        check(ce.chOpen(4, "F:notes.txt", "W", 0) == E::OK, "OPEN #4,\"F:notes.txt\",\"W\": OK (case ignored)");
+        check(ce.chIsOpen(4), "stream 4 is open");
+        check(ce.chOpen(5, "f:notes.txt", "r", 0) == E::R_NAME, "the same file on another stream: F");
+        check(chPrint(ce, 4, "Hello\r") == E::OK, "PRINT #4;\"Hello\"");
+        check(chPrint(ce, 4, std::string("\x10\x02\x11\x05" "ab\x16\x01\x02" "c\x06" "d\r")) == E::OK,
+              "INK, PAPER, AT dropped; the comma");
+        check(chPrint(ce, 4, std::string("  10 \xf5\"x\"\xcb\xec 20\r")) == E::OK, "a LIST # line");
+        check(chPrint(ce, 4, std::string("\xa6\xc5\xa5\xb1 x\r")) == E::OK, "functions and operators");
+        check(chPrint(ce, 4, std::string("\x7b\x0c\x7e\r")) == E::OK, "the 2068's own keywords");
+        check(ce.chIn(4, *(new uint8_t)) == E::R_PARAM, "INPUT # on a \"w\" channel: Q");
+        check(ce.chClose(4) == E::OK && !ce.chIsOpen(4), "CLOSE #4");
+        std::string t = fileText(croot + "/notes.txt");
+        printf("        |%s|\n", t.c_str());
+        check(t.substr(0, 6) == "Hello\n", "CR is written as LF");
+        check(t.find("abc             d\n") != std::string::npos, "controls dropped, the comma to column 16");
+        check(t.find("  10 PRINT \"x\" THEN GO TO  20\n") != std::string::npos, "keywords expanded with spaces");
+        check(t.find("INKEY$ OR RNDLEN  x\n") != std::string::npos, "functions without a space before");
+        check(t.find("ON ERR DELETE FREE \n") != std::string::npos, "ON ERR, DELETE, FREE");
+        check(ce.chClose(4) == E::OK, "CLOSE # of a closed stream: nothing");
+
+        // Reading text: LF, CRLF and CR line ends; a last line with none; Report 8.
+        writeBytes(croot + "/in.txt", "one\ntwo\r\nthree\rfour");
+        check(ce.chOpen(5, "f:in.txt", "", 0) == E::OK, "OPEN #5,\"f:in.txt\": read by default");
+        uint8_t stop = 99;
+        check(chLine(ce, 5) == "one" && chLine(ce, 5) == "two" && chLine(ce, 5) == "three", "LF, CRLF, CR");
+        check(chLine(ce, 5, &stop) == "four" && stop == E::OK, "a last line without a line end still ends");
+        check(chLine(ce, 5, &stop) == "" && stop == E::CH_EOF, "then the end of the file (Report 8)");
+        check(chPrint(ce, 5, "dropped\r") == E::OK, "INPUT #'s prompt on a read channel is dropped");
+        check(ce.chRestore(5) == E::OK && chLine(ce, 5) == "one", "RESTORE #5: back to the start");
+        check(chPrint(ce, 5, tab(5)) == E::OK && chLine(ce, 5) == "two", "TAB 5 in a stream: byte 5");
+        check(chPrint(ce, 5, tab(0)) == E::OK && chLine(ce, 5) == "19", "TAB 0: the size in bytes");
+        ce.chClose(5);
+        check(fileText(croot + "/in.txt") == "one\ntwo\r\nthree\rfour", "reading leaves the file alone");
+
+        // Binary: bytes as they are, but 23 is TAB.
+        check(ce.chOpen(6, "f:data.bin", "wb", 0) == E::OK, "OPEN #6,\"f:data.bin\",\"wb\"");
+        check(chPrint(ce, 6, std::string("\x10\x02\xf5\r\x00\xff", 6)) == E::OK, "control codes, a keyword, CR, 0");
+        ce.chClose(6);
+        check(fileText(croot + "/data.bin") == std::string("\x10\x02\xf5\r\x00\xff", 6), "written unchanged");
+        check(ce.chOpen(6, "f:data.bin", "rb", 0) == E::OK, "read back, binary");
+        uint8_t b = 0;
+        std::string back;
+        while (ce.chIn(6, b) == E::OK) back += (char) b;
+        check(back == std::string("\x10\x02\xf5\r\x00\xff", 6), "every byte, then the end");
+        ce.chClose(6);
+
+        // Append.
+        check(ce.chOpen(4, "f:notes.txt", "a", 0) == E::OK, "OPEN #4,...,\"a\"");
+        chPrint(ce, 4, "more\r");
+        check(chPrint(ce, 4, tab(1)) == E::R_PARAM, "TAB on an append channel: Q");
+        ce.chClose(4);
+        t = fileText(croot + "/notes.txt");
+        check(t.size() > 5 && t.substr(t.size() - 5) == "more\n", "appended at the end");
+
+        // Records.
+        check(ce.chOpen(7, "f:people.dat", "u", 10) == E::OK, "OPEN #7,\"f:people.dat\",\"u\",10 (made)");
+        check(chPrint(ce, 7, tab(3) + "carol\r") == E::OK, "PRINT #7;TAB 3;\"carol\"");
+        check(chPrint(ce, 7, tab(1) + "al" + "ice\r") == E::OK, "TAB 1, two items, one record");
+        check(chPrint(ce, 7, "bob\r") == E::OK, "no TAB: the next record (2)");
+        check(chPrint(ce, 7, tab(2) + "this is too long\r") == E::R_PARAM, "longer than the record: Q");
+        check(chPrint(ce, 7, tab(4) + "dave") == E::OK && chPrint(ce, 7, "x\r") == E::OK,
+              "PRINT ending in ; keeps the record open");
+        check(chPrint(ce, 7, tab(0) + "x") == E::R_PARAM, "PRINT #7;TAB 0: Q");
+        check(chPrint(ce, 7, tab(0)) == E::OK && chLine(ce, 7) == "4", "INPUT #7;TAB 0;n: 4 records");
+        check(chPrint(ce, 7, tab(3)) == E::OK && chLine(ce, 7) == "carol     ", "INPUT #7;TAB 3;a$: the whole record");
+        check(chLine(ce, 7) == "davex     ", "no TAB: the next one");
+        check(chLine(ce, 7, &stop) == "" && stop == E::CH_EOF, "past the last record: Report 8");
+        check(ce.chRestore(7) == E::OK && chLine(ce, 7) == "alice     ", "RESTORE #7: record 1");
+        check(chPrint(ce, 7, tab(6) + "\r") == E::OK, "PRINT #7;TAB 6: an empty record, past the end");
+        ce.chClose(7);
+        check(fileText(croot + "/people.dat") == "alice     bob       carol     davex     " + std::string(20, ' '),
+              "the file: records 1-6, the skipped one padded, no line ends");
+
+        // "u" on a stream: a PRINT after an INPUT writes just after that line.
+        writeBytes(croot + "/u.txt", "aa\nbb\n");
+        check(ce.chOpen(8, "f:u.txt", "u", 0) == E::OK, "OPEN #8,\"f:u.txt\",\"u\"");
+        check(chLine(ce, 8) == "aa", "INPUT #8 reads a line");
+        chPrint(ce, 8, "XY\r");
+        ce.chClose(8);
+        check(fileText(croot + "/u.txt") == "aa\nXY\n", "PRINT #8 overwrote the next line");
+
+        // CAT #s into a file.
+        writeFile(croot + "/zz.tap", 0);
+        check(ce.chCat(9, false, "") == E::R_STREAM, "CAT #9, not open: O");
+        check(ce.chOpen(9, "f:cat.txt", "w", 0) == E::OK, "OPEN #9,\"f:cat.txt\",\"w\"");
+        check(ce.chCat(9, true, "*.tap") == E::OK, "CAT #9;\"*.tap\"");
+        ce.chClose(9);
+        t = fileText(croot + "/cat.txt");
+        printf("        |%s|\n", t.c_str());
+        check(t.find("zz.tap") != std::string::npos && t.find("\n") != std::string::npos
+              && t.find('\r') == std::string::npos, "the listing as text, LF line ends");
+        check(ce.chOpen(9, "f:cat.txt", "r", 0) == E::OK && ce.chCat(9, false, "") == E::R_PARAM,
+              "CAT # onto a read channel: Q");
+        ce.chClose(9);
+
+        // Open files can't be erased or moved; a reset closes them.
+        ce.chOpen(10, "f:in.txt", "r", 0);
+        std::string none;
+        check(ce.erase("in.txt", none) == E::R_PARAM, "ERASE an open file: Q");
+        ce.reset();
+        check(!ce.chIsOpen(10), "a reset closes every channel");
+
+        // Through the service calls: the stream comes from CURCHL's record.
+        FakeCpu cc;
+        cc.mem[E::STREAM_N] = 4;
+        cc.mem[E::CH_ARG] = 0;
+        cc.mem[E::CH_ARG + 1] = 0;
+        cc.str("f:svc.txt");
+        for (int i = 0; i < 2; i++) cc.mem[0xF100 + i] = "w"[i];
+        cc.IX = 0xF100;
+        cc.HL = 1;
+        check(ce.service(E::SVC_CH_OPEN, cc) == E::OK, "CH_OPEN: stream (STREAM_N), spec DE/BC, mode IX/HL");
+        // CHANS at 5CB6h: K S R P, then the F record; stream 4's entry points at it.
+        uint16_t chans = 0x5CB6, rec = chans + 20;
+        cc.mem[E::CHANS] = chans & 0xFF;
+        cc.mem[E::CHANS + 1] = chans >> 8;
+        cc.mem[rec + 4] = 'F';
+        cc.mem[rec + 5] = 4;
+        cc.mem[E::STRMS + 6 + 8] = 21;
+        cc.mem[E::CURCHL] = rec & 0xFF;
+        cc.mem[E::CURCHL + 1] = rec >> 8;
+        cc.DE = 'A';
+        check(ce.service(E::SVC_CH_OUT, cc) == E::OK, "CH_OUT: E through CURCHL's record");
+        cc.DE = 0x0D;
+        ce.service(E::SVC_CH_OUT, cc);
+        cc.HL = 4;
+        check(ce.service(E::SVC_CH_CLOSE, cc) == E::OK && fileText(croot + "/svc.txt") == "A\n", "CH_CLOSE: L = the stream");
+        cc.HL = 1;
+        cc.mem[0xF100] = 'r';
+        cc.HL = 1;
+        cc.str("f:svc.txt");
+        check(ce.service(E::SVC_CH_OPEN, cc) == E::OK, "opened again to read");
+        check(ce.service(E::SVC_CH_IN, cc) == E::OK && cc.mem[E::CH_BYTE] == 'A', "CH_IN: the byte at CH_BYTE");
+        check(ce.service(E::SVC_CH_IN, cc) == E::OK && cc.mem[E::CH_BYTE] == 0x0D, "the line end as CR");
+        check(ce.service(E::SVC_CH_IN, cc) == E::CH_EOF, "then CH_EOF");
+        // NEW wipes CHANS: the next OPEN # finds stream 4 orphaned and closes it.
+        cc.mem[E::STRMS + 6 + 8] = 0;
+        cc.mem[E::STREAM_N] = 5;
+        check(ce.service(E::SVC_CH_OPEN, cc) == E::OK && !ce.chIsOpen(4) && ce.chIsOpen(5),
+              "after NEW the same file opens on another stream; the orphan is closed");
+        cc.mem[rec + 4] = 'S';
+        check(ce.service(E::SVC_CH_IN, cc) == E::R_STREAM, "CURCHL not an F record: O");
+        ce.reset();
     }
 
     printf("\nROM patches\n");

@@ -96,6 +96,7 @@ void DiskEngine::reset() {
     eraseQueue_.clear();
     eraseNext_ = 0;
     endReport_ = OK;
+    chCloseAll();
 }
 
 bool DiskEngine::resolve(const std::string& name, std::string& path2068) const {
@@ -307,22 +308,26 @@ uint8_t DiskEngine::buildTapListing(const std::string& path2068, std::string& ou
 }
 
 uint8_t DiskEngine::catOpen(DiskCpu& cpu) {
-    if (cpu.hl() == 0) return buildListing(cwd_, listing_);
-    std::string name = text(cpu), path;
+    return catInto(cpu.hl() != 0, cpu.hl() ? text(cpu) : std::string(), listing_);
+}
+
+uint8_t DiskEngine::catInto(bool arg, const std::string& name, std::string& out) {
+    if (!arg) return buildListing(cwd_, out);
+    std::string path;
     if (name.empty()) {
         if (tap_.empty()) return R_IO;
-        return buildTapListing(tap_, listing_);
+        return buildTapListing(tap_, out);
     }
     if (hasWild(name)) {
         std::string folder, last;
         if (!splitPattern(name, folder, last)) return R_NAME;
-        return buildListing(folder, listing_, last);
+        return buildListing(folder, out, last);
     }
     if (!resolve(name, path)) return R_NAME;
     struct stat st;
     if (stat(hostPath(path).c_str(), &st) != 0) return R_NAME;
-    if (S_ISDIR(st.st_mode)) return buildListing(path == "/" ? path : path + "/", listing_);
-    if (endsWithNoCase(path, ".tap")) return buildTapListing(path, listing_);
+    if (S_ISDIR(st.st_mode)) return buildListing(path == "/" ? path : path + "/", out);
+    if (endsWithNoCase(path, ".tap")) return buildTapListing(path, out);
     return R_NAME;
 }
 
@@ -674,6 +679,8 @@ std::vector<std::string> DiskEngine::matches(const std::string& folder, const st
 
 bool DiskEngine::inUse(const std::string& path) const {
     if (!tap_.empty() && equalNoCase(path, tap_)) return true;
+    for (const Channel& c : chans_)
+        if (c.f && equalNoCase(path, c.path)) return true;
     std::string p = path == "/" ? path : path + "/";
     return cwd_.size() >= p.size() && equalNoCase(cwd_.substr(0, p.size()), p);
 }
@@ -950,7 +957,33 @@ uint8_t DiskEngine::service(uint8_t fn, DiskCpu& cpu) {
             return replace(cpu);
         case SVC_CLOSE_ALL:
             unmount();
+            chCloseAll();
             return OK;
+        case SVC_CH_OPEN: {
+            int stream = cpu.peek(STREAM_N);
+            chSweep(cpu, stream);
+            int reclen = cpu.peek(CH_ARG) | (cpu.peek(CH_ARG + 1) << 8);
+            return chOpen(stream, text(cpu), text2(cpu), reclen);
+        }
+        case SVC_CH_OUT: {
+            int stream = chStreamOf(cpu);
+            if (stream < 0) return R_STREAM;
+            return chOut(stream, cpu.de() & 0xFF);
+        }
+        case SVC_CH_IN: {
+            int stream = chStreamOf(cpu);
+            if (stream < 0) return R_STREAM;
+            uint8_t c = 0;
+            uint8_t r = chIn(stream, c);
+            if (r == OK) cpu.poke(CH_BYTE, c);
+            return r;
+        }
+        case SVC_CH_CLOSE:
+            return chClose(cpu.hl() & 0xFF);
+        case SVC_CH_RESTORE:
+            return chRestore(cpu.hl() & 0xFF);
+        case SVC_CH_CAT:
+            return chCat(cpu.ix() & 0xFF, cpu.hl() != 0, cpu.hl() ? text(cpu) : std::string());
         case SVC_FORMAT:
             return format(text(cpu));
         case SVC_MOVE_TO:
