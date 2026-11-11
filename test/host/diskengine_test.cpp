@@ -530,6 +530,143 @@ int main() {
         check(L2.find(row("hello.bas", "Prog", "134")) != std::string::npos, "games/hello.bas: Prog");
     }
 
+
+    printf("\nFile management\n");
+    {
+        std::string r2 = "/tmp/diskengine_test_fm";
+        system(("rm -rf " + r2).c_str());
+        mkdir(r2.c_str(), 0755);
+        mkdir((r2 + "/games").c_str(), 0755);
+        mkdir((r2 + "/backup").c_str(), 0755);
+        writeBytes(r2 + "/a.tap", "AAAA");
+        writeBytes(r2 + "/b.tap", "BB");
+        writeBytes(r2 + "/notes.txt", "line one\r\nline two\nend");
+        writeBytes(r2 + "/bin.dat", std::string("\x00\x01\x02hello\xff", 9));
+        writeBytes(r2 + "/backup/b.tap", "old");
+        DiskEngine e(r2);
+        std::string out;
+
+        check(DiskEngine::wildMatch("*.tap", "GAME.TAP") && DiskEngine::wildMatch("g?me*", "game1.bas")
+              && !DiskEngine::wildMatch("*.tap", "a.tapx") && DiskEngine::wildMatch("*", "x") && !DiskEngine::wildMatch("a?", "a"),
+              "wildcards: * and ?, case ignored");
+
+        // CAT "*.tap"
+        check(e.buildListing("/", out, "*.tap") == DiskEngine::OK, "CAT \"*.tap\": OK");
+        std::vector<std::string> L = lines(out);
+        check(L.size() == 4 && L[0] == "/*.tap" && L[3] == "0 folders, 2 files", "the matches only");
+        check(e.buildListing("/", out, "*.zip") == DiskEngine::R_NAME, "no match: F");
+
+        // MOVE TO
+        check(e.moveTo("games") == DiskEngine::OK && e.cwd() == "/games/", "MOVE TO \"games\"");
+        check(e.moveTo("..") == DiskEngine::OK && e.cwd() == "/", "MOVE TO \"..\"");
+        check(e.moveTo("-") == DiskEngine::OK && e.cwd() == "/games/", "MOVE TO \"-\": back");
+        check(e.moveTo("-") == DiskEngine::OK && e.cwd() == "/", "and back again");
+        check(e.moveTo("/games") == DiskEngine::OK && e.moveTo("/") == DiskEngine::OK && e.cwd() == "/", "MOVE TO \"/\"");
+        check(e.moveTo("nope") == DiskEngine::R_NAME && e.moveTo("a.tap") == DiskEngine::R_PARAM
+              && e.moveTo("") == DiskEngine::R_NAME && e.moveTo("..") == DiskEngine::R_NAME, "missing F, a file Q, \"\" F, above the root F");
+        e.mount("/a.tap");
+        e.moveTo("games");
+        check(e.mounted().empty(), "changing folder unmounts the TAP");
+        e.moveTo("/");
+
+        // MOVE a TO b
+        check(e.move("b.tap", "c.tap") == DiskEngine::OK && readFile((r2 + "/c.tap").c_str()).size() == 2, "MOVE renames");
+        check(e.move("c.tap", "games") == DiskEngine::OK && readFile((r2 + "/games/c.tap").c_str()).size() == 2, "MOVE into a folder keeps the name");
+        check(e.move("a.tap", "notes.txt") == DiskEngine::R_NAME, "MOVE onto a file: F");
+        check(e.move("nope", "x") == DiskEngine::R_NAME, "MOVE a missing file: F");
+        check(e.move("games", "games/sub") == DiskEngine::R_PARAM, "MOVE a folder into itself: Q");
+        e.mount("/a.tap");
+        check(e.move("a.tap", "z.tap") == DiskEngine::R_PARAM, "MOVE the mounted TAP: Q");
+        e.unmount();
+        e.moveTo("games");
+        check(e.move("/games", "/g2") == DiskEngine::R_PARAM, "MOVE the current folder: Q");
+        e.moveTo("/");
+        check(e.move("*.tap", "x") == DiskEngine::R_PARAM, "MOVE a pattern: Q");
+
+        // COPY
+        check(e.copy("a.tap", "a2.tap", out) == DiskEngine::OK && readFile((r2 + "/a2.tap").c_str()).size() == 4, "COPY copies");
+        check(readFile((r2 + "/a.tap").c_str()).size() == 4, "the source is untouched");
+        check(e.copy("a.tap", "a2.tap", out) == DiskEngine::R_NAME, "COPY onto a file: F");
+        check(e.copy("a.tap", "games", out) == DiskEngine::OK && readFile((r2 + "/games/a.tap").c_str()).size() == 4, "COPY into a folder keeps the name");
+        check(e.copy("games", "g", out) == DiskEngine::R_PARAM, "COPY a folder: Q");
+        writeBytes(r2 + "/b.tap", "BB");
+        check(e.copy("*.tap", "backup", out) == DiskEngine::OK, "COPY \"*.tap\" TO \"backup\"");
+        L = lines(out);
+        for (auto& l : L) printf("        |%s|\n", l.c_str());
+        check(L.size() == 3 && L[0].find("a.tap") == 0 && L[0].find("copied") != std::string::npos
+              && L[2].find("b.tap") == 0 && L[2].find("exists") != std::string::npos, "each copied or exists");
+        check(readFile((r2 + "/backup/b.tap").c_str()).size() == 3, "an existing copy isn't overwritten");
+        check(e.copy("*.tap", "a.tap", out) == DiskEngine::R_PARAM, "a pattern to a file: Q");
+        check(e.copy("*.zip", "backup", out) == DiskEngine::R_NAME, "a pattern with no match: F");
+
+        // FORMAT
+        check(e.format("tools/") == DiskEngine::OK && e.moveTo("tools") == DiskEngine::OK, "FORMAT \"tools/\": a folder");
+        e.moveTo("/");
+        check(e.format("tools/") == DiskEngine::R_NAME, "FORMAT an existing folder: F");
+        check(e.format("notes.txt") == DiskEngine::R_PARAM && e.format("v1.2") == DiskEngine::R_PARAM, "FORMAT \"notes.txt\" / \"v1.2\": Q");
+        check(e.format(".tap") == DiskEngine::R_NAME, "FORMAT \".tap\": F");
+        check(e.format("v1.2.tap") == DiskEngine::OK && e.mounted() == "/v1.2.tap", "FORMAT \"v1.2.tap\": a TAP, mounted");
+        e.unmount();
+
+        // ERASE
+        check(e.erase("a2.tap", out) == DiskEngine::OK && out.empty() && readFile((r2 + "/a2.tap").c_str()).empty(), "ERASE: silently");
+        check(e.erase("a2.tap", out) == DiskEngine::R_NAME, "ERASE a missing file: F");
+        check(e.erase("tools", out) == DiskEngine::R_PARAM, "ERASE a folder without the /: Q");
+        check(e.erase("games/", out) == DiskEngine::R_PARAM, "ERASE a folder that isn't empty: Q");
+        check(e.erase("tools/", out) == DiskEngine::OK && e.moveTo("tools") == DiskEngine::R_NAME, "ERASE \"tools/\": gone");
+        e.mount("/a.tap");
+        check(e.erase("a.tap", out) == DiskEngine::R_PARAM, "ERASE the mounted TAP: Q");
+        e.unmount();
+        writeBytes(r2 + "/x1.bak", "1");
+        writeBytes(r2 + "/x2.bak", "2");
+        writeBytes(r2 + "/x3.bak", "3");
+        writeBytes(r2 + "/x4.bak", "4");
+        check(e.erase("*.bak", out) == DiskEngine::OK && out == std::string("Erase x1.bak (Y/N)? \x01"), "ERASE \"*.bak\": the first question");
+        check(e.answer(1, out) == DiskEngine::OK && out == std::string("Y\rErase x2.bak (Y/N)? \x01") && readFile((r2 + "/x1.bak").c_str()).empty(), "Y erases, the next question");
+        check(e.answer(2, out) == DiskEngine::OK && out == std::string("-\rErase x3.bak (Y/N)? \x01") && readFile((r2 + "/x2.bak").c_str()).size() == 1, "another key skips");
+        check(e.answer(0, out) == DiskEngine::OK && out == "N\r", "N stops");
+        check(e.answer(1, out) == DiskEngine::OK && out.empty() && readFile((r2 + "/x4.bak").c_str()).size() == 1, "and nothing more is asked");
+
+        // The service protocol for ERASE: text, the question, ANSWER, END.
+        FakeCpu c;
+        c.str("*.bak");
+        check(e.service(DiskEngine::SVC_ERASE, c) == DiskEngine::OK, "SVC_ERASE: OK");
+        std::string got;
+        uint8_t ch;
+        while ((ch = e.service(DiskEngine::SVC_CAT_CHAR, c)) > DiskEngine::OUT_ASK) got += (char) ch;
+        check(ch == DiskEngine::OUT_ASK && got == "Erase x2.bak (Y/N)? ", "CAT_CHAR: the question, then OUT_ASK");
+        c.HL = 1;
+        e.service(DiskEngine::SVC_ANSWER, c);
+        got.clear();
+        while ((ch = e.service(DiskEngine::SVC_CAT_CHAR, c)) > DiskEngine::OUT_ASK) got += (char) ch;
+        check(ch == DiskEngine::OUT_ASK && got == "Y\rErase x3.bak (Y/N)? ", "after ANSWER, the next");
+        c.HL = 0;
+        e.service(DiskEngine::SVC_ANSWER, c);
+        got.clear();
+        while ((ch = e.service(DiskEngine::SVC_CAT_CHAR, c)) > DiskEngine::OUT_ASK) got += (char) ch;
+        check(ch == 0 && got == "N\r" && e.service(DiskEngine::SVC_END, c) == DiskEngine::OK, "N, the end, END OK");
+
+        // COPY and MOVE through the services: IX/HL is the second name.
+        c.str("a.tap");
+        const char* second = "a3.tap";
+        memcpy(c.mem + 0xE000, second, 6);
+        c.IX = 0xE000; c.HL = 6;
+        check(e.service(DiskEngine::SVC_COPY, c) == DiskEngine::OK && readFile((r2 + "/a3.tap").c_str()).size() == 4, "SVC_COPY");
+        c.str("a3.tap");
+        memcpy(c.mem + 0xE000, "a4.tap", 6);
+        check(e.service(DiskEngine::SVC_MOVE, c) == DiskEngine::OK && readFile((r2 + "/a4.tap").c_str()).size() == 4, "SVC_MOVE");
+        c.str("games");
+        check(e.service(DiskEngine::SVC_MOVE_TO, c) == DiskEngine::OK && e.cwd() == "/games/", "SVC_MOVE_TO");
+        e.reset();
+        check(e.cwd() == "/", "a reset: back to /");
+
+        // LIST
+        check(e.list("notes.txt", out) == DiskEngine::OK && out == "line one\rline two\rend\r", "LIST a text file: CR, LF and CRLF all end lines");
+        check(e.list("bin.dat", out) == DiskEngine::OK && out == "0000 00010268656C6C6F ...hello\r0008 FF               .\r", "LIST a binary file: a hex dump");
+        check(e.list("games", out) == DiskEngine::R_PARAM && e.list("*.tap", out) == DiskEngine::R_PARAM, "LIST a folder or a pattern: Q");
+        check(e.list("nope", out) == DiskEngine::R_NAME, "LIST a missing file: F");
+    }
+
     printf("\nROM patches\n");
     std::vector<uint8_t> stock = readFile("patches/base/TS2068_U16.BIN");
     std::vector<uint8_t> stockX = readFile("patches/base/TS2068_U20.BIN");
@@ -566,6 +703,10 @@ int main() {
         check(home[0x25D6] == 0xC3 && home[0x25D7] == 0xDC && home[0x25D8] == 0x3C, "the keywords' stub jumps to 3CDCh");
         check(home[0x25D9] == 0x06 && home[0x25DA] == 0xD4 && home[0x25DB] == 0x18 && home[0x25DC] == 0xF9,
               "25D9h: LD B,D4h / JR 25D6h");
+        check(home[0x25DD] == 0x06 && home[0x25DE] == 0xFF && home[0x25DF] == 0x18 && home[0x25E0] == 0xF5,
+              "25DDh: LD B,FFh / JR 25D6h (COPY)");
+        check(home[0x19D7] == 0x05 && home[0x19D8] == 0xDD && home[0x19D9] == 0x25, "COPY: class 05h, 25DDh");
+        check(home[0x19AF] == 0x05 && home[0x19B0] == 0xD6 && home[0x19B1] == 0x25, "LIST: class 05h, 25D6h");
         check(home[0x1A03] == 0x05 && home[0x1A04] == 0xD9 && home[0x1A05] == 0x25, "CLOSE #: class 05h, 25D9h");
         check(home[0x1946] == 0xD2 && home[0x1947] == 0xC2, "CAT and FORMAT's syntax entries skip to class 05h");
         check(home[0x3CDC] == 0xF3 && home[0x3CDD] == 0xD3 && home[0x3CDE] == DiskEngine::PORT_DOS_ON, "HOME 3CDCh: DI / OUT (D3h),A");

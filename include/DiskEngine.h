@@ -83,6 +83,18 @@ public:
     static const uint8_t SVC_CLOSE_ALL = 0x07;  // CLOSE #*: unmount the TAP
     static const uint8_t SVC_FORMAT = 0x08;     // DE/BC: a new, empty TAP, mounted
     static const uint8_t SVC_REPLACE = 0x09;    // L = 1: Y to "Replace?"; 0: N (answer D)
+    // Phase 4's commands. Each may leave text for CAT_CHAR to hand out, as
+    // CAT_OPEN does; a 1 in it (OUT_ASK) is a question: the ROM reads a key
+    // and calls ANSWER. At the end (CAT_CHAR's 0) the ROM calls END for the
+    // report, if any.
+    static const uint8_t SVC_MOVE_TO = 0x0A;    // DE/BC: change folder ("-" the previous one)
+    static const uint8_t SVC_MOVE = 0x0B;       // DE/BC TO IX/HL: rename, or into a folder
+    static const uint8_t SVC_COPY = 0x0C;       // DE/BC TO IX/HL: copy (a pattern: into a folder)
+    static const uint8_t SVC_ERASE = 0x0D;      // DE/BC: delete (a pattern: asks each)
+    static const uint8_t SVC_LIST = 0x0E;       // DE/BC: show a file
+    static const uint8_t SVC_ANSWER = 0x0F;     // L = 1 Y, 0 N (stop), 2 any other key
+    static const uint8_t SVC_END = 0x10;        // the report the text ends with, or OK
+    static const uint8_t OUT_ASK = 0x01;        // in the text: a question, read a key
 
     // The tape functions' answers, below every report code.
     static const uint8_t T_NOT_OURS = 0;        // nothing mounted: the stock tape routine runs
@@ -140,8 +152,23 @@ public:
     void unmount();
 
     // The listing CAT prints for a folder, lines ending in CR (0Dh); for
-    // the tests. Returns OK or a report code.
-    uint8_t buildListing(const std::string& folder, std::string& out);
+    // the tests. Returns OK or a report code. With a pattern ("*.tap"),
+    // only the names that match it; none is F.
+    uint8_t buildListing(const std::string& folder, std::string& out, const std::string& pattern = "");
+
+    // Wildcards: * any run of characters, ? any one; case ignored.
+    static bool wildMatch(const char* pattern, const char* name);
+    static bool hasWild(const std::string& s);
+
+    // The commands, for the tests (service() calls them with the CPU's
+    // strings). Text for the screen goes to `out`.
+    uint8_t moveTo(const std::string& name);
+    uint8_t move(const std::string& from, const std::string& to);
+    uint8_t copy(const std::string& from, const std::string& to, std::string& out);
+    uint8_t erase(const std::string& name, std::string& out);
+    uint8_t answer(int key, std::string& out);   // 1 Y, 0 N, 2 another key
+    uint8_t list(const std::string& name, std::string& out);
+    uint8_t format(const std::string& name);
     // A native file's contents, from its first 128 bytes and its size:
     // false if it is neither a +3DOS file nor a raw 6912-byte screen.
     struct FileInfo {
@@ -176,6 +203,11 @@ private:
     std::string listing_;
     size_t listingPos_ = 0;
 
+    std::string prevCwd_;         // MOVE TO "-"
+    std::vector<std::string> eraseQueue_;   // ERASE "pattern": the matches still to ask about
+    size_t eraseNext_ = 0;
+    uint8_t endReport_ = 0;       // what END answers
+
     std::string tap_;             // the mounted TAP, 2068 path; "" if none
     std::vector<Block> blocks_;
     size_t tapPos_ = 0;           // the next block R_TAPE looks at
@@ -201,7 +233,15 @@ private:
     uint8_t replace(DiskCpu& cpu);
     void dropNative();
     static uint8_t serve(DiskCpu& cpu, const uint8_t* block, size_t len, bool load, uint16_t ix, uint16_t de);
-    uint8_t format(DiskCpu& cpu);
+    static std::string text2(DiskCpu& cpu);  // IX/HL
+    void askNextErase(std::string& out);
+    // Names in a folder (2068 path) that match a pattern, sorted; files only
+    // if filesOnly.
+    std::vector<std::string> matches(const std::string& folder, const std::string& pattern, bool filesOnly);
+    // A 2068 path that is the current folder or holds it, or the mounted TAP.
+    bool inUse(const std::string& path) const;
+    // Splits "dir/pat" into the folder (2068 path, ending '/') and the last part.
+    bool splitPattern(const std::string& name, std::string& folder, std::string& last) const;
     uint8_t catOpen(DiskCpu& cpu);
 };
 

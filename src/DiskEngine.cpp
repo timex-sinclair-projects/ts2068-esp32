@@ -10,6 +10,7 @@
 
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -91,6 +92,10 @@ void DiskEngine::reset() {
     listingPos_ = 0;
     unmount();
     dropNative();
+    prevCwd_.clear();
+    eraseQueue_.clear();
+    eraseNext_ = 0;
+    endReport_ = OK;
 }
 
 bool DiskEngine::resolve(const std::string& name, std::string& path2068) const {
@@ -188,7 +193,7 @@ const char* DiskEngine::kindOf(const std::string& host, long size) {
     return info.type < 4 ? HEADER_TYPES[info.type] : "?";
 }
 
-uint8_t DiskEngine::buildListing(const std::string& folder, std::string& out) {
+uint8_t DiskEngine::buildListing(const std::string& folder, std::string& out, const std::string& pattern) {
     out.clear();
     std::string host = hostPath(folder);
     DIR* d = opendir(host.c_str());
@@ -202,6 +207,7 @@ uint8_t DiskEngine::buildListing(const std::string& folder, std::string& out) {
     while (struct dirent* e = readdir(d)) {
         std::string name = e->d_name;
         if (name.empty() || name[0] == '.') continue;   // ., .., hidden files
+        if (!pattern.empty() && !wildMatch(pattern.c_str(), name.c_str())) continue;
         if ((int) entries.size() >= MAX_ENTRIES || names.size() + name.size() + 1 > names.capacity()) {
             more++;
             continue;
@@ -223,8 +229,9 @@ uint8_t DiskEngine::buildListing(const std::string& folder, std::string& out) {
 
     // Every line is 31 characters or fewer: at 32 the 2068 wraps to the
     // next line before the CR, leaving a blank line.
+    if (!pattern.empty() && entries.empty() && !more) return R_NAME;
     out.reserve(LISTING_RESERVE);
-    out += fit(printable(folder), 31) + "\r";
+    out += fit(printable(folder + pattern), 31) + "\r";
     int folders = 0, files = 0;
     char line[64];
     for (const Entry& e : entries) {
@@ -305,6 +312,11 @@ uint8_t DiskEngine::catOpen(DiskCpu& cpu) {
     if (name.empty()) {
         if (tap_.empty()) return R_IO;
         return buildTapListing(tap_, listing_);
+    }
+    if (hasWild(name)) {
+        std::string folder, last;
+        if (!splitPattern(name, folder, last)) return R_NAME;
+        return buildListing(folder, listing_, last);
     }
     if (!resolve(name, path)) return R_NAME;
     struct stat st;
@@ -609,13 +621,304 @@ uint8_t DiskEngine::writeTape(DiskCpu& cpu) {
     return T_DONE;
 }
 
-uint8_t DiskEngine::format(DiskCpu& cpu) {
-    std::string name = text(cpu), path;
-    if (name.empty() || name.back() == '/') return R_NAME;
-    if (!endsWithNoCase(name, ".tap")) name += ".tap";
-    if (!resolve(name, path)) return R_NAME;
+bool DiskEngine::wildMatch(const char* p, const char* n) {
+    // Iterative, with one backtrack point for the last '*'.
+    const char *star = nullptr, *mark = nullptr;
+    while (*n) {
+        if (*p == '*') { star = p++; mark = n; continue; }
+        if (*p && (*p == '?' || tolower((unsigned char) *p) == tolower((unsigned char) *n))) { p++; n++; continue; }
+        if (star) { p = star + 1; n = ++mark; continue; }
+        return false;
+    }
+    while (*p == '*') p++;
+    return !*p;
+}
+
+bool DiskEngine::hasWild(const std::string& s) {
+    return s.find_first_of("*?") != std::string::npos;
+}
+
+bool DiskEngine::splitPattern(const std::string& name, std::string& folder, std::string& last) const {
+    size_t slash = name.rfind('/');
+    last = slash == std::string::npos ? name : name.substr(slash + 1);
+    std::string dir = slash == std::string::npos ? "." : (slash == 0 ? "/" : name.substr(0, slash));
+    if (hasWild(dir) || last.empty()) return false;     // wildcards in the last part only
+    std::string path;
+    if (!resolve(dir, path)) return false;
+    struct stat st;
+    if (stat(hostPath(path).c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+    folder = path == "/" ? path : path + "/";
+    return true;
+}
+
+std::vector<std::string> DiskEngine::matches(const std::string& folder, const std::string& pattern, bool filesOnly) {
+    std::vector<std::string> out;
+    std::string host = hostPath(folder);
+    DIR* d = opendir(host.c_str());
+    if (!d) return out;
+    while (struct dirent* e = readdir(d)) {
+        std::string name = e->d_name;
+        if (name.empty() || name[0] == '.' || !wildMatch(pattern.c_str(), name.c_str())) continue;
+        struct stat st;
+        if (stat((host + "/" + name).c_str(), &st) != 0) continue;
+        if (filesOnly && S_ISDIR(st.st_mode)) continue;
+        out.push_back(name);
+        if (out.size() >= (size_t) MAX_ENTRIES) break;
+    }
+    closedir(d);
+    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) {
+        return lessNoCase(a.c_str(), b.c_str());
+    });
+    return out;
+}
+
+bool DiskEngine::inUse(const std::string& path) const {
+    if (!tap_.empty() && equalNoCase(path, tap_)) return true;
+    std::string p = path == "/" ? path : path + "/";
+    return cwd_.size() >= p.size() && equalNoCase(cwd_.substr(0, p.size()), p);
+}
+
+std::string DiskEngine::text2(DiskCpu& cpu) {
+    std::string s;
+    uint16_t at = cpu.ix(), len = cpu.hl();
+    for (uint16_t i = 0; i < len && i < 255; i++) s += (char) cpu.peek(at + i);
+    return s;
+}
+
+uint8_t DiskEngine::moveTo(const std::string& name) {
+    std::string target;
+    if (name == "-") {
+        if (prevCwd_.empty()) return OK;                // nowhere to go back to
+        target = prevCwd_;
+    } else {
+        std::string path;
+        if (name.empty() || hasWild(name) || !resolve(name, path)) return R_NAME;   // "" (the picker) later
+        struct stat st;
+        if (stat(hostPath(path).c_str(), &st) != 0) return R_NAME;
+        if (!S_ISDIR(st.st_mode)) return R_PARAM;
+        target = path == "/" ? path : path + "/";
+    }
+    if (target != cwd_) {
+        prevCwd_ = cwd_;
+        cwd_ = target;
+        unmount();                                      // changing folder unmounts the TAP
+    }
+    return OK;
+}
+
+uint8_t DiskEngine::move(const std::string& from, const std::string& to) {
+    if (hasWild(from) || hasWild(to)) return R_PARAM;
+    std::string src, dst;
+    if (from.empty() || to.empty() || !resolve(from, src) || !resolve(to, dst) || src == "/") return R_NAME;
+    struct stat st;
+    if (stat(hostPath(src).c_str(), &st) != 0) return R_NAME;
+    bool srcDir = S_ISDIR(st.st_mode);
+    if (inUse(src)) return R_PARAM;
+    if (stat(hostPath(dst).c_str(), &st) == 0) {
+        if (!S_ISDIR(st.st_mode)) return R_NAME;        // never over a file
+        dst = (dst == "/" ? "" : dst) + "/" + src.substr(src.rfind('/') + 1);
+        if (stat(hostPath(dst).c_str(), &st) == 0) return R_NAME;
+    } else {
+        std::string folder = dst.substr(0, dst.rfind('/'));
+        if (!folder.empty() && (stat(hostPath(folder).c_str(), &st) != 0 || !S_ISDIR(st.st_mode))) return R_NAME;
+    }
+    if (srcDir && dst.size() > src.size() && equalNoCase(dst.substr(0, src.size() + 1), src + "/")) return R_PARAM;
+    return rename(hostPath(src).c_str(), hostPath(dst).c_str()) == 0 ? OK : R_IO;
+}
+
+namespace {
+bool copyFile(const std::string& from, const std::string& to) {
+    FILE* in = fopen(from.c_str(), "rb");
+    if (!in) return false;
+    FILE* out = fopen(to.c_str(), "wb");
+    if (!out) { fclose(in); return false; }
+    std::vector<char> buf(4096);
+    bool ok = true;
+    size_t n;
+    while ((n = fread(buf.data(), 1, buf.size(), in)) > 0)
+        if (fwrite(buf.data(), 1, n, out) != n) { ok = false; break; }
+    if (ferror(in)) ok = false;
+    fclose(in);
+    if (fclose(out) != 0) ok = false;
+    if (!ok) remove(to.c_str());
+    return ok;
+}
+} // namespace
+
+uint8_t DiskEngine::copy(const std::string& from, const std::string& to, std::string& out) {
+    out.clear();
+    std::string dst;
+    if (from.empty() || to.empty() || hasWild(to) || !resolve(to, dst)) return R_NAME;
+    struct stat st;
+    bool dstDir = stat(hostPath(dst).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    bool dstFile = !dstDir && stat(hostPath(dst).c_str(), &st) == 0;
+    std::string dstFolder = dst == "/" ? "/" : dst + "/";
+
+    if (hasWild(from)) {
+        std::string folder, pattern;
+        if (!splitPattern(from, folder, pattern)) return R_NAME;
+        if (!dstDir) return R_PARAM;                    // a pattern copies into a folder
+        std::vector<std::string> names = matches(folder, pattern, true);
+        if (names.empty()) return R_NAME;
+        for (const std::string& n : names) {
+            std::string target = dstFolder + n;
+            const char* what;
+            if (stat(hostPath(target).c_str(), &st) == 0) what = "exists";
+            else if (equalNoCase(folder + n, target)) what = "exists";
+            else what = copyFile(hostPath(folder + n), hostPath(target)) ? "copied" : "failed";
+            out += fit(printable(n), 24) + " " + what + "\r";
+        }
+        return OK;
+    }
+    std::string src;
+    if (!resolve(from, src)) return R_NAME;
+    if (stat(hostPath(src).c_str(), &st) != 0) return R_NAME;
+    if (S_ISDIR(st.st_mode)) return R_PARAM;
+    if (dstDir) dst = dstFolder + src.substr(src.rfind('/') + 1);
+    else if (dstFile) return R_NAME;
+    else {
+        std::string folder = dst.substr(0, dst.rfind('/'));
+        if (!folder.empty() && (stat(hostPath(folder).c_str(), &st) != 0 || !S_ISDIR(st.st_mode))) return R_NAME;
+    }
+    if (stat(hostPath(dst).c_str(), &st) == 0) return R_NAME;   // never over a file
+    return copyFile(hostPath(src), hostPath(dst)) ? OK : R_IO;
+}
+
+void DiskEngine::askNextErase(std::string& out) {
+    if (eraseNext_ >= eraseQueue_.size()) {
+        eraseQueue_.clear();
+        return;
+    }
+    std::string path = eraseQueue_[eraseNext_];
+    out += "Erase " + fit(printable(path.substr(path.rfind('/') + 1)), 16) + " (Y/N)? ";
+    out += (char) OUT_ASK;
+}
+
+uint8_t DiskEngine::erase(const std::string& name, std::string& out) {
+    out.clear();
+    eraseQueue_.clear();
+    eraseNext_ = 0;
+    if (name.empty()) return R_NAME;
+    if (hasWild(name)) {
+        std::string folder, pattern;
+        if (!splitPattern(name, folder, pattern)) return R_NAME;
+        for (const std::string& n : matches(folder, pattern, true)) eraseQueue_.push_back(folder + n);
+        if (eraseQueue_.empty()) return R_NAME;
+        askNextErase(out);
+        return OK;
+    }
+    std::string path;
+    bool folderWanted = name.back() == '/';
+    if (!resolve(name, path) || path == "/") return R_NAME;
+    struct stat st;
+    if (stat(hostPath(path).c_str(), &st) != 0) return R_NAME;
+    if (inUse(path)) return R_PARAM;
+    if (S_ISDIR(st.st_mode)) {
+        if (!folderWanted) return R_PARAM;              // a folder is ERASE "dir/"
+        if (!matches(path + "/", "*", false).empty()) return R_PARAM;   // not empty
+        return rmdir(hostPath(path).c_str()) == 0 ? OK : R_PARAM;
+    }
+    if (folderWanted) return R_NAME;
+    return remove(hostPath(path).c_str()) == 0 ? OK : R_IO;
+}
+
+uint8_t DiskEngine::answer(int key, std::string& out) {
+    out.clear();
+    if (eraseNext_ >= eraseQueue_.size()) return OK;
+    std::string path = eraseQueue_[eraseNext_++];
+    if (key == 0) {                                     // N: stop
+        out += "N\r";
+        eraseQueue_.clear();
+        return OK;
+    }
+    if (key == 1) {
+        if (inUse(path)) out += "Y - in use\r";
+        else if (remove(hostPath(path).c_str()) == 0) out += "Y\r";
+        else out += "Y - failed\r";
+    } else
+        out += "-\r";                                   // any other key: skipped
+    askNextErase(out);
+    return OK;
+}
+
+uint8_t DiskEngine::list(const std::string& name, std::string& out) {
+    out.clear();
+    std::string path;
+    if (name.empty() || !resolve(name, path)) return R_NAME;
+    if (hasWild(name)) return R_PARAM;
     std::string host = hostPath(path);
     struct stat st;
+    if (stat(host.c_str(), &st) != 0) return R_NAME;
+    if (S_ISDIR(st.st_mode)) return R_PARAM;
+    FILE* f = fopen(host.c_str(), "rb");
+    if (!f) return R_IO;
+    const size_t TEXT_MAX = 8192, DUMP_MAX = 2048;
+    std::vector<uint8_t> data(TEXT_MAX);
+    size_t n = fread(data.data(), 1, data.size(), f);
+    fclose(f);
+    data.resize(n);
+    bool text = true;
+    for (uint8_t c : data)
+        if (!(c == '\r' || c == '\n' || c == '\t' || (c >= 0x20 && c < 0x7F))) { text = false; break; }
+    char line[64];
+    if (text) {
+        for (size_t i = 0; i < data.size(); i++) {
+            uint8_t c = data[i];
+            if (c == '\r') { out += '\r'; if (i + 1 < data.size() && data[i + 1] == '\n') i++; }
+            else if (c == '\n') out += '\r';
+            else if (c == '\t') out += ' ';
+            else out += (char) c;
+        }
+        if (!out.empty() && out.back() != '\r') out += '\r';
+        if ((long) data.size() < st.st_size) {
+            snprintf(line, sizeof line, "and %ld more bytes\r", (long) st.st_size - (long) data.size());
+            out += line;
+        }
+        return OK;
+    }
+    size_t shown = std::min(data.size(), DUMP_MAX);
+    for (size_t at = 0; at < shown; at += 8) {
+        snprintf(line, sizeof line, "%04X ", (unsigned) at);
+        out += line;
+        std::string ascii;
+        for (size_t k = 0; k < 8; k++) {
+            if (at + k < shown) {
+                snprintf(line, sizeof line, "%02X", data[at + k]);
+                out += line;
+                uint8_t c = data[at + k];
+                ascii += (c >= 0x20 && c < 0x7F) ? (char) c : '.';
+            } else
+                out += "  ";
+        }
+        out += " " + ascii + "\r";
+    }
+    if ((long) shown < st.st_size) {
+        snprintf(line, sizeof line, "and %ld more bytes\r", (long) st.st_size - (long) shown);
+        out += line;
+    }
+    return OK;
+}
+
+uint8_t DiskEngine::format(const std::string& nameIn) {
+    std::string name = nameIn, path;
+    if (name.empty()) return R_NAME;
+    struct stat st;
+    if (name.back() == '/') {                           // a folder
+        name.pop_back();
+        if (name.empty() || hasWild(name) || !resolve(name, path) || path == "/") return R_NAME;
+        if (stat(hostPath(path).c_str(), &st) == 0) return R_NAME;
+        std::string folder = path.substr(0, path.rfind('/'));
+        if (!folder.empty() && (stat(hostPath(folder).c_str(), &st) != 0 || !S_ISDIR(st.st_mode))) return R_NAME;
+        return mkdir(hostPath(path).c_str(), 0755) == 0 ? OK : R_IO;
+    }
+    if (hasWild(name)) return R_NAME;
+    std::string base = name.substr(name.rfind('/') + 1);
+    if (!endsWithNoCase(base, ".tap")) {
+        if (base.find('.') != std::string::npos) return R_PARAM;   // "notes.txt", "v1.2"
+        name += ".tap";
+    } else if (base.size() == 4) return R_NAME;         // only ".tap"
+    if (!resolve(name, path)) return R_NAME;
+    std::string host = hostPath(path);
     if (stat(host.c_str(), &st) == 0) return R_NAME;    // never over an existing file
     FILE* f = fopen(host.c_str(), "wb");
     if (!f) return R_IO;
@@ -649,7 +952,34 @@ uint8_t DiskEngine::service(uint8_t fn, DiskCpu& cpu) {
             unmount();
             return OK;
         case SVC_FORMAT:
-            return format(cpu);
+            return format(text(cpu));
+        case SVC_MOVE_TO:
+            return moveTo(text(cpu));
+        case SVC_MOVE:
+            return move(text(cpu), text2(cpu));
+        case SVC_COPY:
+        case SVC_ERASE:
+        case SVC_LIST:
+        case SVC_ANSWER: {
+            std::string out;
+            uint8_t r;
+            if (fn == SVC_COPY) r = copy(text(cpu), text2(cpu), out);
+            else if (fn == SVC_ERASE) r = erase(text(cpu), out);
+            else if (fn == SVC_LIST) r = list(text(cpu), out);
+            else r = answer(cpu.hl() & 0xFF, out);
+            if (fn != SVC_ANSWER) {
+                listing_.clear();
+                listingPos_ = 0;
+                endReport_ = OK;
+            }
+            if (r == OK) listing_ += out;
+            return r;
+        }
+        case SVC_END: {
+            uint8_t r = endReport_;
+            endReport_ = OK;
+            return r;
+        }
         default:
             return R_UNKNOWN_FN;
     }

@@ -55,6 +55,14 @@ SVC_TAPE_OURS   EQU $06            ; A = 1 if SAVE goes to the engine (a TAP or 
 SVC_CLOSE_ALL   EQU $07            ; CLOSE #*: unmount the TAP
 SVC_FORMAT      EQU $08            ; DE/BC: a new TAP, mounted
 SVC_REPLACE     EQU $09            ; L = 1: Y to "Replace?", 0: N (the answer: D)
+SVC_MOVE_TO     EQU $0A            ; DE/BC: change folder
+SVC_MOVE        EQU $0B            ; DE/BC TO IX/HL: rename
+SVC_COPY        EQU $0C            ; DE/BC TO IX/HL: copy
+SVC_ERASE       EQU $0D            ; DE/BC: delete
+SVC_LIST        EQU $0E            ; DE/BC: show a file
+SVC_ANSWER      EQU $0F            ; L = 1 Y, 0 N, 2 another key
+SVC_END         EQU $10            ; the report the text ends with, or 0
+OUT_ASK         EQU $01            ; CAT_CHAR: a question; read a key, then ANSWER
 
 ; Answers of the tape services, below the report codes (all 4 or more).
 T_NOT_OURS      EQU 0              ; the stock routine runs
@@ -85,6 +93,17 @@ CR              EQU $0D
 TOK_CAT         EQU $CF
 TOK_FORMAT      EQU $D0
 TOK_CLOSE       EQU $D4
+TOK_MOVE        EQU $D1
+TOK_ERASE       EQU $D2
+TOK_COPY        EQU $FF
+TOK_TO          EQU $CC
+TOK_INKEY       EQU $A6
+TOK_VALS        EQU $AE
+TOK_STRS        EQU $C1
+TOK_CHRS        EQU $C2
+T_ADDR          EQU $5C74
+T_LIST          EQU $19B0          ; T_ADDR in a LIST statement: its parameter list
+                                   ;   (19AFh) + 1, where class 05h leaves it
 
 H_PRINT_A       EQU $0010          ; HOME: RST 10h, print A on the current channel
 H_ERROR_3       EQU $0055          ; HOME: LD (IY+0),L / LD SP,(ERR_SP) / JP 1354h,
@@ -95,6 +114,9 @@ H_CHECK_END     EQU $1B44          ; HOME: CHECK-END: CALL SYNTAX-Z / RET NZ / P
                                    ;   POP BC / STMT-NEXT (1B4Ah)
 H_EXPT_1NUM     EQU $1BE5          ; HOME: class 06h, a numeric expression
 H_EXPT_STR      EQU $1BEF          ; HOME: class 0Ah, a string expression
+H_EXPT_STR_ONLY EQU $1BEF          ; (the same: class 0Ah doesn't check the end)
+H_COPY          EQU $0A02          ; HOME: COPY, the screen to the printer
+H_LIST          EQU $1545          ; HOME: LIST, class 05h: it parses its own #n and n
 
 ; The EXROM (SIDE=2).
 X_ERROR         EQU $0010          ; EXROM: XRST8 after it has fetched the code:
@@ -375,18 +397,29 @@ HOMECALL:
 
         ORG     $0100
 
-; DOS_MAIN -- B = the keyword. Returns NC Z when done, NC NZ with A = the RST
-; 8 code of the report HOME is to raise, or C with HL = a HOME routine to go
-; on to.
+; DOS_MAIN -- B = the keyword (LIST comes with no token in B: T_ADDR says
+; it's LIST). Returns NC Z when done, NC NZ with A = the RST 8 code of the
+; report HOME is to raise, or C with HL = a HOME routine to go on to.
 DOS_MAIN:
         ld      (DOS_SP),sp
+        ld      hl,(T_ADDR)
+        ld      de,T_LIST
+        and     a
+        sbc     hl,de
+        jp      z,LIST
         ld      a,b
         cp      TOK_CAT
         jr      z,CAT
         cp      TOK_FORMAT
-        jr      z,FORMAT
+        jp      z,FORMAT
+        cp      TOK_MOVE
+        jp      z,MOVE
+        cp      TOK_ERASE
+        jp      z,ERASE
         cp      TOK_CLOSE
-        jr      z,CLOSE
+        jp      z,CLOSE
+        cp      TOK_COPY
+        jp      z,COPY
 NONSENSE:
         ld      a,R_NONSENSE
 ; REPORT -- A = a report code: back to DOS_MAIN's caller from any depth,
@@ -399,7 +432,7 @@ REPORT: ld      sp,(DOS_SP)
 
 ;------------------------------------------------------------------------------
 ; CAT          the current folder
-; CAT "dir"    another folder
+; CAT "dir"    another folder; CAT "*.tap" the matches
 ; CAT "x.tap"  the blocks in a TAP
 ; CAT ""       the mounted TAP's blocks, > at the pointer
 ;------------------------------------------------------------------------------
@@ -413,40 +446,165 @@ CAT:    call    AT_END
         ret     z
         call    POP_STR
         ld      hl,1
-.open:  push    hl
+.open:  ld      a,SVC_CAT_OPEN
+        jp      RUN_OUT
+
+;------------------------------------------------------------------------------
+; FORMAT "x.tap" / FORMAT "x"   a new, empty TAP, mounted
+; FORMAT "dir/"                 a new folder
+;------------------------------------------------------------------------------
+FORMAT: call    AT_END
+        jp      z,NONSENSE         ; the name is required
+        call    EXPT_STR_END
+        ret     z
+        call    POP_STR
+        ld      a,SVC_FORMAT
+        jr      SVC_ONLY
+
+;------------------------------------------------------------------------------
+; MOVE TO "dir"        change folder ("..", "/", "-" the previous one)
+; MOVE "old" TO "new"  rename; into a folder if "new" is one
+;------------------------------------------------------------------------------
+MOVE:   call    SKIP_SPACES
+        cp      TOK_TO
+        jr      nz,.two
+        call    NEXT_CHAR
+        call    EXPT_STR_END
+        ret     z
+        call    POP_STR
+        ld      a,SVC_MOVE_TO
+        jr      SVC_ONLY
+.two:   call    TWO_NAMES
+        ret     z
+        ld      a,SVC_MOVE
+; SVC_ONLY -- a service with nothing to print: OK or its report.
+SVC_ONLY:
+        out     (P_SVC),a
+        and     a
+        jp      nz,REPORT
+        ret
+
+;------------------------------------------------------------------------------
+; COPY                 the stock COPY: the screen to the printer
+; COPY "a" TO "b"      copy a file; a pattern copies into a folder, listing
+;                      each name as copied or exists
+;------------------------------------------------------------------------------
+COPY:   call    AT_END
+        jr      nz,.two
+        call    RUNTIME
+        ret     z                  ; the syntax pass: accepted
+        ld      hl,H_COPY          ; run time: the stock COPY, with the stack and
+        scf                        ;   T_ADDR as class 00h would have left them
+        ret
+.two:   call    TWO_NAMES
+        ret     z
+        ld      a,SVC_COPY
+        jr      RUN_OUT
+
+;------------------------------------------------------------------------------
+; ERASE "x"       delete a file, silently
+; ERASE "dir/"    remove an empty folder
+; ERASE "*.bak"   "Erase name (Y/N)?" for each match: Y erases, N stops,
+;                 any other key skips
+;------------------------------------------------------------------------------
+ERASE:  call    EXPT_STR_END
+        ret     z
+        call    POP_STR
+        ld      a,SVC_ERASE
+        jr      RUN_OUT
+
+;------------------------------------------------------------------------------
+; LIST "file"            show a file: text as text, anything else in hex
+; LIST, LIST n, LIST #n  the stock LIST, on both passes (it checks itself)
+; Which form it is goes by how the expression starts: scanning it to find
+; out would insert hidden numbers twice on the syntax pass, and evaluate it
+; twice at run time.
+;------------------------------------------------------------------------------
+LIST:   call    AT_END
+        jr      z,.home
+        cp      '#'
+        jr      z,.home
+        call    STR_NEXT
+        jr      nz,.home
+        call    EXPT_STR_END
+        ret     z
+        call    POP_STR
+        ld      a,SVC_LIST
+        jr      RUN_OUT
+.home:  ld      hl,H_LIST
+        scf
+        ret
+
+;------------------------------------------------------------------------------
+; RUN_OUT -- A = a service whose text goes to the upper screen. Opens
+; channel 2, makes the call, then prints what it left (CAT_CHAR), asking
+; for a key where it says to (OUT_ASK, then ANSWER), and ends with END's
+; report, if any.
+;------------------------------------------------------------------------------
+RUN_OUT:
+        push    af
+        push    hl
         push    de
         push    bc
+        push    ix
         ld      a,2
         ld      hl,H_CHAN_OPEN
         call    HOMECALL           ; the upper screen
+        pop     ix
         pop     bc
         pop     de
         pop     hl
-        ld      a,SVC_CAT_OPEN
+        pop     af
         out     (P_SVC),a
         and     a
         jp      nz,REPORT
 .next:  ld      a,SVC_CAT_CHAR
         out     (P_SVC),a
         and     a
-        ret     z                  ; the end of the listing: NC Z
+        jr      z,.end
+        cp      OUT_ASK
+        jr      z,.ask
         ld      hl,H_PRINT_A
         call    HOMECALL
         jr      .next
-
-;------------------------------------------------------------------------------
-; FORMAT "x.tap" / FORMAT "x"   a new, empty TAP, mounted
-;------------------------------------------------------------------------------
-FORMAT: call    AT_END
-        jr      z,NONSENSE         ; the name is required
-        call    EXPT_STR_END
-        ret     z
-        call    POP_STR
-        ld      a,SVC_FORMAT
+.ask:   call    GET_KEY
+        ld      a,SVC_ANSWER
         out     (P_SVC),a
         and     a
         jp      nz,REPORT
-        ret
+        jr      .next
+.end:   ld      a,SVC_END
+        out     (P_SVC),a
+        and     a
+        jp      nz,REPORT
+        ret                        ; NC Z
+
+; GET_KEY -- wait for a key: L = 1 Y, 0 N (or SPACE), 2 any other. Reads
+; the keyboard ports directly (the module runs under DI).
+GET_KEY:
+.up:    xor     a                  ; first, until no key is down
+        in      a,($FE)
+        and     $1F
+        cp      $1F
+        jr      nz,.up
+.down:  ld      a,$DF              ; Y: row P-Y, bit 4
+        in      a,($FE)
+        bit     4,a
+        ld      l,1
+        ret     z
+        ld      a,$7F              ; N: row SPACE-B, bit 3; SPACE bit 0
+        in      a,($FE)
+        and     $09
+        cp      $09
+        ld      l,0
+        ret     nz
+        xor     a                  ; any other key
+        in      a,($FE)
+        and     $1F
+        cp      $1F
+        ld      l,2
+        ret     nz
+        jr      .down
 
 ;------------------------------------------------------------------------------
 ; CLOSE #*    unmount the TAP (and, later, close every file)
@@ -455,18 +613,13 @@ FORMAT: call    AT_END
 CLOSE:  call    SKIP_SPACES
         cp      '*'
         jr      nz,.stream
-        ld      hl,(CH_ADD)
-        inc     hl
-        ld      (CH_ADD),hl
+        call    NEXT_CHAR
         call    AT_END
         jp      nz,NONSENSE
         call    RUNTIME
         ret     z
         ld      a,SVC_CLOSE_ALL
-        out     (P_SVC),a
-        and     a
-        jp      nz,REPORT
-        ret
+        jp      SVC_ONLY
 .stream:
         ld      hl,H_EXPT_1NUM
         call    HOMECALL
@@ -498,6 +651,61 @@ AT_END: call    SKIP_SPACES
         cp      CR
         ret     z
         cp      ':'
+        ret
+
+; NEXT_CHAR -- step CH_ADD over one character.
+NEXT_CHAR:
+        ld      hl,(CH_ADD)
+        inc     hl
+        ld      (CH_ADD),hl
+        ret
+
+; STR_NEXT -- A = the character at CH_ADD. Z if a string expression starts
+; with it: a quote, a string variable (a letter and $), INKEY$, VAL$, STR$
+; or CHR$.
+STR_NEXT:
+        cp      '"'
+        ret     z
+        cp      TOK_INKEY
+        ret     z
+        cp      TOK_VALS
+        ret     z
+        cp      TOK_STRS
+        ret     z
+        cp      TOK_CHRS
+        ret     z
+        or      $20                ; a letter, either case
+        cp      'a'
+        jr      c,.no
+        cp      'z'+1
+        jr      nc,.no
+        ld      hl,(CH_ADD)
+        inc     hl
+        ld      a,(hl)
+        cp      '$'
+        ret
+.no:    or      1                  ; NZ
+        ret
+
+; TWO_NAMES -- string TO string, ending the statement. Z on the syntax pass;
+; at run time NZ, with DE/BC the first, IX/HL the second.
+TWO_NAMES:
+        ld      hl,H_EXPT_STR_ONLY
+        call    HOMECALL
+        call    SKIP_SPACES
+        cp      TOK_TO
+        jp      nz,NONSENSE
+        call    NEXT_CHAR
+        call    EXPT_STR_END
+        ret     z
+        call    POP_STR            ; the second
+        push    de
+        push    bc
+        call    POP_STR            ; the first
+        pop     hl
+        pop     ix
+        ld      a,1
+        or      a                  ; NZ
         ret
 
 ; EXPT_STR_END -- a string expression that ends the statement. Z on the

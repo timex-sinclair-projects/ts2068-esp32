@@ -59,11 +59,20 @@ def home_patches(sym, pocket):
         (0x1A03, "06 00 9f 13", "05 d9 25 00",
          "CLOSE #'s parameter list: class 06h, class 00h, 139Fh -> class 05h, 25D9h, so "
          "CLOSE #* parses; the DOS ROM does class 06h itself and goes on to 139Fh"),
-        (0x25D6, "cd 89 28 20 06 cd 69", jp(sym["H_ENTER"]) + "06d418f9",
-         "the disk keywords' dead stub: JP H_ENTER, then CLOSE #'s LD B,D4h / JR 25D6h at 25D9h"),
+        (0x25D6, "cd 89 28 20 06 cd 69 25 cd 44 1b", jp(sym["H_ENTER"]) + "06d418f9" + "06ff18f5",
+         "the disk keywords' dead stub: JP H_ENTER, then CLOSE #'s LD B,D4h / JR 25D6h at 25D9h "
+         "and COPY's LD B,FFh / JR 25D6h at 25DDh. LIST comes straight to 25D6h"),
+        (0x19D7, "00 02 0a", "05 dd 25",
+         "COPY's parameter list: class 00h, 0A02h -> class 05h, 25DDh, so COPY \"a\" TO \"b\" "
+         "parses; a bare COPY goes back to 0A02h (T_ADDR stays 19D8h)"),
+        (0x19AF, "05 45 15", "05 d6 25",
+         "LIST's parameter list: class 05h, 1545h -> class 05h, 25D6h: LIST \"file\" shows a "
+         "file, and LIST, LIST n, LIST #n go back to 1545h (T_ADDR 19B0h says LIST)"),
         (POCKET, None, pocket.hex(),
          "the switch to the DOS ROM and back, in the genuine FFh filler before CHRSET"),
         (0x0010, "c3 ed 11", None, "anchor: RST 10h, print A (H_PRINT_A)"),
+        (0x0A02, "f3 06 b0 21 00 40", None, "anchor: COPY, the screen to the printer (H_COPY)"),
+        (0x1545, "3e 02 fd 36 02 00", None, "anchor: LIST (H_LIST)"),
         (0x0053, "e1 6e fd 75 00 ed 7b 3d 5c c3 54 13", None,
          "anchor: RST 8's tail; 0055h raises the report in L (H_ERROR_3)"),
         (0x1230, "87 c6 16 6f 26 5c", None, "anchor: CHAN-OPEN (H_CHAN_OPEN)"),
