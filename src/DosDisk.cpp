@@ -4,6 +4,7 @@
 #include "DosRom.h"
 #include "DiskEngine.h"
 #include "SCLD.h"
+#include "DockLoader.h"
 
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,7 @@ public:
     uint16_t sp() override { return Z80::getRegSP(); }
     uint8_t peek(uint16_t a) override { return Z80Ops::peek8_2068(a); }
     void poke(uint16_t a, uint8_t v) override { Z80Ops::poke8_2068(a, v); }
+    uint8_t video() override { return SCLD::videoMode; }
 };
 Z80Cpu z80cpu;
 #endif
@@ -123,6 +125,19 @@ uint8_t service(uint8_t fn) {
 
 void machineReset() {
     engine.reset();
+}
+
+bool frame() {
+    std::vector<uint8_t> dck;
+    if (!on) return false;
+    engine.prTick();
+    if (!engine.takeDock(dck)) return false;
+    if (!DockLoader::loadFromBuffer(dck.data(), dck.size())) {
+        printf("DOS: the cartridge didn't load\n");
+        return false;
+    }
+    printf("DOS: cartridge docked%s, resetting\n", DockLoader::hasAutostart() ? " (LROS)" : "");
+    return true;
 }
 
 } // namespace DosDisk

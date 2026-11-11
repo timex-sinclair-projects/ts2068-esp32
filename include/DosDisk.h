@@ -68,6 +68,11 @@ uint8_t service(uint8_t fn);
 // A machine reset: the engine forgets its state.
 void machineReset();
 
+// Between frames: the printer's text to its file when it goes quiet, and
+// a cartridge LOAD "x.dck"/"x.rom" asked for: true to reset.
+// Returns true when the machine should now be reset.
+bool frame();
+
 }
 
 #endif

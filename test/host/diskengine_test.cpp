@@ -12,7 +12,7 @@ Build and run (from repo root, after tools/build_dos.py):
 
     g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
         test/host/diskengine_test.cpp src/DiskEngine.cpp src/DiskChannels.cpp src/DosDisk.cpp \
-        src/SCLD.cpp \
+        src/SCLD.cpp src/DockLoader.cpp \
         -o /tmp/diskengine_test \
     && /tmp/diskengine_test
 
@@ -73,6 +73,8 @@ public:
     void pushedAF(uint8_t a, bool carry) { mem[SP] = carry ? 1 : 0; mem[SP + 1] = a; }
     uint8_t peek(uint16_t a) override { return mem[a]; }
     void poke(uint16_t a, uint8_t v) override { mem[a] = v; }
+    uint8_t VIDEO = 0;
+    uint8_t video() override { return VIDEO; }
 };
 
 static std::string drain(DiskEngine& eng, DiskCpu& cpu) {
@@ -96,6 +98,23 @@ static std::string tapBlock(uint8_t flag, const std::string& data) {
     for (char c : data) { b += c; x ^= (uint8_t) c; }
     b += (char) x;
     return b;
+}
+
+// A TZX block 10h from a TAP block (its length and the rest).
+static std::string tzx10(const std::string& tap) {
+    return std::string("\x10\xE8\x03", 3) + tap;
+}
+
+// A TZX block 11h, the bit timings given.
+static std::string tzx11(const std::string& tap, uint16_t zero, uint16_t one) {
+    std::string b("\x11", 1);
+    uint16_t t[] = {2168, 667, 735, zero, one, 3223};
+    for (uint16_t v : t) { b += (char) (v & 0xFF); b += (char) (v >> 8); }
+    b += (char) 8;                                  // the last byte's bits
+    b += std::string("\xE8\x03", 2);                // pause
+    uint32_t len = (uint32_t) tap.size() - 2;
+    b += (char) (len & 0xFF); b += (char) ((len >> 8) & 0xFF); b += (char) (len >> 16);
+    return b + tap.substr(2);
 }
 
 static std::string tapHeader(uint8_t type, const std::string& name, uint16_t len, uint16_t p1, uint16_t p2) {
@@ -521,7 +540,10 @@ int main() {
         c.str("games");
         check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_PARAM, "LOAD a folder: Q");
         c.str("");
-        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_IO, "LOAD \"\" with nothing mounted: J");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_PICK && e.picking(),
+              "LOAD \"\" with nothing mounted: the picker");
+        e.pickKey(0xFF, 0xFF, 0xFF, 0xFE);
+        check(e.pickEnd(c) == DiskEngine::R_BREAK && !e.picking(), "SPACE: D");
         cmd(0);
         c.str("games");
         check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::R_PARAM, "SAVE over a folder: Q");
@@ -598,7 +620,7 @@ int main() {
         check(e.moveTo("-") == DiskEngine::OK && e.cwd() == "/", "and back again");
         check(e.moveTo("/games") == DiskEngine::OK && e.moveTo("/") == DiskEngine::OK && e.cwd() == "/", "MOVE TO \"/\"");
         check(e.moveTo("nope") == DiskEngine::R_NAME && e.moveTo("a.tap") == DiskEngine::R_PARAM
-              && e.moveTo("") == DiskEngine::R_NAME && e.moveTo("..") == DiskEngine::R_NAME, "missing F, a file Q, \"\" F, above the root F");
+              && e.moveTo("..") == DiskEngine::R_NAME, "missing F, a file Q, above the root F");
         e.mount("/a.tap");
         e.moveTo("games");
         check(e.mounted().empty(), "changing folder unmounts the TAP");
@@ -860,6 +882,276 @@ int main() {
         cc.mem[rec + 4] = 'S';
         check(ce.service(E::SVC_CH_IN, cc) == E::R_STREAM, "CURCHL not an F record: O");
         ce.reset();
+    }
+
+    printf("\nPicker\n");
+    {
+        std::string kroot = root + "/pick";
+        mkdir(kroot.c_str(), 0755);
+        mkdir((kroot + "/games").c_str(), 0755);
+        mkdir((kroot + "/zz").c_str(), 0755);
+        mkdir((kroot + "/games/deep").c_str(), 0755);
+        std::string prog("\x00\x0a\x02\x00\xf9\x0d", 6);
+        writeBytes(kroot + "/games/one.tap", tapHeader(0, "one", 6, 10, 6) + tapBlock(0xFF, prog));
+        writeBytes(kroot + "/notes.txt", "hello");
+        writeBytes(kroot + "/b.dck", std::string(9, '\0'));
+        for (int i = 0; i < 25; i++) {
+            char n[32];
+            snprintf(n, sizeof n, "/s%02d.scr", i);
+            writeBytes(kroot + n, std::string(6912, '\0'));
+        }
+        DiskEngine e(kroot);
+        typedef DiskEngine E;
+        FakeCpu c;
+        c.mem[0x5C3B] = 0x80;
+        c.mem[0x5C74] = 1;
+        const uint8_t NO = 0xFF;
+        auto up = [&]() { return e.pickKey(0xF7, NO, NO, NO); };
+        auto down = [&]() { return e.pickKey(0xEF, NO, NO, NO); };
+        auto enter = [&]() { return e.pickKey(NO, NO, 0xFE, NO); };
+        c.str("");
+        check(e.service(E::SVC_TAPE_NAME, c) == E::T_PICK, "LOAD \"\": T_PICK");
+        std::string page = e.pickText();
+        check(page.size() == 21 * 35 + 4 && page.substr(0, 3) == std::string("\x16\x00\x00", 3)
+              && page.substr(3, 7) == "LOAD / ", "21 lines from AT 0,0: \"LOAD /\" first");
+        check(page.find(" <games>") != std::string::npos && page.find(" <zz>") != std::string::npos
+              && page.find("notes.txt") == std::string::npos && page.find("b.dck") != std::string::npos
+              && page.find("s00.scr") != std::string::npos && page.find("s17.scr") == std::string::npos,
+              "folders, then what LOAD takes, a page of 19");
+        check(page.find(std::string("\x14\x01 <games>", 10)) != std::string::npos, "the first in inverse");
+        check(e.service(E::SVC_PICK_CHAR, c) == E::PICK_DONE && e.service(E::SVC_PICK_END, c) == E::T_PICK,
+              "PICK_CHAR's end, PICK_END: still picking");
+        check(e.pickKey(NO, NO, NO, NO) == 0 && up() == 0, "no key, or up at the top: nothing");
+        check(down() == 1 && e.pickText().size() == 2 * 35 + 4, "down: two lines again");
+        for (int i = 0; i < 18; i++) down();
+        page = e.pickText();
+        check(page.find("s17.scr") != std::string::npos && page.size() > 21 * 35, "past the page: the next page");
+        check(e.pickKey(NO, 0xEF, NO, NO) == 1 && e.pickText().find("<games>") != std::string::npos, "5: a page back");
+        e.pickKey(0xFB, NO, NO, NO);
+        e.pickKey(0xFB, NO, NO, NO);
+        check(e.pickText().find("s24.scr") != std::string::npos, "8, 8: the last page");
+        e.pickKey(NO, 0xEF, NO, NO);
+        e.pickKey(NO, 0xEF, NO, NO);                    // back to the top
+        check(enter() == 1 && e.pickText().find("LOAD /games/") != std::string::npos, "ENTER on <games>: into it");
+        check(e.service(E::SVC_PICK_END, c) == E::T_PICK && e.cwd() == "/", "still picking; the folder is not changed");
+        down();
+        down();                                         // .., <deep>, one.tap
+        check(enter() == 1 && !e.picking(), "ENTER on one.tap: picked");
+        page = e.pickText();
+        check(page.find_first_not_of(std::string("\x16\x00 ", 3) + std::string(1, '\0')) != std::string::npos
+              && page.find("one.tap") == std::string::npos && page.find("LOAD") == std::string::npos, "a clear screen");
+        check(e.service(E::SVC_PICK_END, c) == E::T_DONE && e.mounted() == "/games/one.tap", "PICK_END: LOAD \"games/one.tap\"");
+        check(e.service(E::SVC_PICK_END, c) == E::R_IO, "PICK_END again: J");
+        e.unmount();
+        // VERIFY "": no cartridges.
+        c.mem[0x5C74] = 2;
+        c.str("");
+        e.service(E::SVC_TAPE_NAME, c);
+        check(e.pickText().find("b.dck") == std::string::npos, "VERIFY \"\": no cartridges");
+        e.pickKey(NO, NO, NO, 0xFE);
+        e.pickEnd(c);
+        // MOVE TO "": folders, "." picks.
+        c.str("");
+        check(e.service(E::SVC_MOVE_TO, c) == E::T_PICK, "MOVE TO \"\": T_PICK");
+        page = e.pickText();
+        check(page.find("MOVE TO /") != std::string::npos && page.find(" . (this folder)") != std::string::npos
+              && page.find("s00.scr") == std::string::npos && page.find("<zz>") != std::string::npos, "MOVE TO: folders only");
+        down();
+        check(enter() == 1 && !e.picking() && e.pickEnd(c) == E::OK && e.cwd() == "/games/", "ENTER on <games>: MOVE TO it");
+        e.service(E::SVC_MOVE_TO, c);
+        check(enter() == 1 && e.pickEnd(c) == E::OK && e.cwd() == "/games/", "\".\": here");
+        e.service(E::SVC_MOVE_TO, c);
+        down();
+        check(enter() == 1 && e.pickEnd(c) == E::OK && e.cwd() == "/", "\"..\": up");
+        e.service(E::SVC_MOVE_TO, c);
+        e.pickKey(NO, NO, NO, 0xFE);
+        check(e.pickEnd(c) == E::R_BREAK && e.cwd() == "/", "SPACE: D, nowhere");
+    }
+
+    printf("\nPrinter\n");
+    {
+        std::string proot = root + "/printer";
+        mkdir(proot.c_str(), 0755);
+        DiskEngine e(proot);
+        typedef DiskEngine E;
+        auto text = [&]() {
+            std::vector<uint8_t> v = readFile((proot + "/print/printer.txt").c_str());
+            return std::string(v.begin(), v.end());
+        };
+        auto send = [&](const std::string& s) { for (char ch : s) e.prOut((uint8_t) ch); };
+        send("HELLO\r");
+        check(e.prFlush() == E::OK && text() == "HELLO\n", "LPRINT \"HELLO\": a line in print/printer.txt");
+        send("A\x06" "B\x06" "C\r");
+        e.prFlush();
+        check(text() == "HELLO\nA               B\nC\n", "the comma: 16, then a new line");
+        send(std::string("x\x17\x05\x00y\x17\x02\x00z\r", 11));
+        e.prFlush();
+        check(text().substr(text().size() - 11) == "x    y\n  z\n", "TAB 5, then TAB 2: a new line");
+        send(std::string("\x16\x03\x0Aq\x10\x02r\r", 8));
+        e.prFlush();
+        check(text().substr(text().size() - 13) == "          qr\n", "AT 3,10: the column; INK 2 dropped");
+        send(std::string(40, 'w') + "\r");
+        e.prFlush();
+        check(text().substr(text().size() - 42) == std::string(32, 'w') + "\n" + std::string(8, 'w') + "\n",
+              "32 columns, then the next line");
+        send(std::string(32, 'v') + "\r");
+        e.prFlush();
+        check(text().substr(text().size() - 33) == std::string(32, 'v') + "\n", "a full line: one feed, not two");
+        send(std::string("10\xF5\"x\"\xC5\x31\r", 9));
+        e.prFlush();
+        check(text().substr(text().size() - 18) == "10 PRINT \"x\" OR 1\n", "LLIST: keywords spelled out");
+        send(std::string("\x60\x81\x8F\x90\r", 5));
+        e.prFlush();
+        check(text().substr(text().size() - 10) == "\u00A3\u259D\u2588?\n", "the pound, block graphics, a UDG");
+        // Text waits for a CR or a quiet half second.
+        size_t before = text().size();
+        send("wait");
+        for (int i = 0; i < 29; i++) e.prTick();
+        check(text().size() == before, "29 quiet frames: still waiting");
+        e.prTick();
+        check(text().substr(before) == "wait", "the 30th: in the file, no line added");
+
+        // Through CH_OUT: CURCHL on a P record.
+        FakeCpu c;
+        c.mem[0x5C51] = 0x00; c.mem[0x5C52] = 0x70;        // CURCHL = 7000h
+        c.mem[0x7004] = 'P';
+        c.DE = 'Z';
+        check(e.service(E::SVC_CH_OUT, c) == E::OK, "CH_OUT on the P record: the printer");
+        c.DE = 0x0D;
+        e.service(E::SVC_CH_OUT, c);
+        e.prFlush();
+        check(text().substr(text().size() - 6) == "waitZ\n", "...its text");
+        c.mem[0x7004] = 'K';
+        check(e.service(E::SVC_CH_OUT, c) == E::R_STREAM, "CH_OUT on another record: O");
+
+        // COPY: the top 22 lines, 1 bit a dot, bottom up.
+        c.mem[0x4000] = 0x80;                               // the top left dot
+        c.mem[0x4000 + 0x0700 + 0x00E0 + 0x0800 - 0x0800 + 31] = 0x01;   // line 7 of row 7, the right
+        std::string name;
+        check(e.prCopy(c, &name) == E::OK && name == "/print/copy001.bmp", "COPY: print/copy001.bmp");
+        std::vector<uint8_t> bmp = readFile((proot + name).c_str());
+        check(bmp.size() == 62 + 176 * 32 && bmp[0] == 'B' && bmp[1] == 'M', "a 256x176 1-bit BMP");
+        check(bmp.size() > 62 && bmp[18] == 0x00 && bmp[19] == 0x01 && bmp[22] == 176 && bmp[28] == 1,
+              "256 wide, 176 high, 1 bit");
+        check(bmp.size() == 62 + 176 * 32 && bmp[62 + 175 * 32] == 0x80, "the top line is last, its first dot set");
+        check(bmp.size() == 62 + 176 * 32 && bmp[62 + (175 - 63) * 32 + 31] == 0x01, "line 63, the last byte");
+        check(e.prCopy(c, &name) == E::OK && name == "/print/copy002.bmp", "the next COPY: copy002.bmp");
+        c.VIDEO = 0x04;
+        c.mem[0x6000] = 0xFF;
+        check(e.prCopy(c, &name) == E::OK, "COPY in hi-res");
+        bmp = readFile((proot + name).c_str());
+        check(bmp.size() == 62 + 176 * 64 && bmp[18] == 0x00 && bmp[19] == 0x02, "512 wide");
+        check(bmp.size() == 62 + 176 * 64 && bmp[62 + 175 * 64] == 0x80 && bmp[62 + 175 * 64 + 1] == 0xFF,
+              "columns from 4000h and 6000h in turn");
+        c.VIDEO = 0x01;
+        c.mem[0x6000] = 0x0F;
+        check(e.prCopy(c, &name) == E::OK && (bmp = readFile((proot + name).c_str())).size() > 62 + 175 * 32
+              && bmp[62 + 175 * 32] == 0x0F, "screen 1: from 6000h");
+        c.VIDEO = 0x00;
+        c.mem[0x4000] = 0x80;
+        c.mem[0x6000] = 0xFF;
+        c.mem[0x5C51] = 0;
+        check(e.service(E::SVC_PR_COPY, c) == E::OK, "SVC_PR_COPY");
+    }
+
+    printf("\nTZX\n");
+    {
+        std::string troot = root + "/tzx";
+        mkdir(troot.c_str(), 0755);
+        std::string prog("\x00\x0a\x02\x00\xf9\x0d", 6);
+        std::string tzx = std::string("ZXTape!\x1A\x01\x14", 10)
+                        + std::string("\x30\x05hello", 7)                               // text description
+                        + tzx10(tapHeader(0, "loader", (uint16_t) prog.size(), 10, (uint16_t) prog.size()))
+                        + tzx10(tapBlock(0xFF, prog))
+                        + std::string("\x21\x02go", 4) + std::string("\x22", 1)         // a group
+                        + tzx11(tapHeader(3, "pic", 4, 0x9000, 0x8000), 855, 1710)      // ROM timings
+                        + tzx11(tapBlock(0xFF, "ABCD"), 870, 1700)                      // near enough
+                        + tzx11(tapBlock(0xFF, "fast"), 400, 800)                       // turbo
+                        + std::string("\x14\x00\x00\x00\x00\x08\xE8\x03\x02\x00\x00", 11) + "ab"   // pure data
+                        + std::string("\x32\x03\x00\x01\x00\x00", 6);                   // archive info
+        writeBytes(troot + "/game.tzx", tzx);
+        writeBytes(troot + "/bad.tzx", std::string("not a tape"));
+        writeBytes(troot + "/cut.tzx", tzx.substr(0, tzx.find("ABCD") + 2));
+        DiskEngine e(troot);
+        typedef DiskEngine E;
+        FakeCpu c;
+        c.mem[0x5C3B] = 0x80;
+        c.mem[0x5C74] = 1;
+        c.str("game.tzx");
+        check(e.service(E::SVC_TAPE_NAME, c) == E::T_DONE && e.mounted() == "/game.tzx", "LOAD \"game.tzx\": mounted");
+        check(e.tapBlocks() == 4, "4 blocks: two 10h, two 11h at ROM speed");
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        check(e.service(E::SVC_R_TAPE, c) == E::T_DONE && memcmp(c.mem + 0x6001, "loader    ", 10) == 0, "the header");
+        c.IX = 0x7000; c.DE = (uint16_t) prog.size(); c.pushedAF(0xFF, true);
+        check(e.service(E::SVC_R_TAPE, c) == E::T_DONE && memcmp(c.mem + 0x7000, prog.data(), prog.size()) == 0,
+              "the program");
+        c.str("");
+        e.service(E::SVC_TAPE_NAME, c);
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        check(e.service(E::SVC_R_TAPE, c) == E::T_DONE && c.mem[0x6000] == 3, "the 11h header: Code");
+        c.IX = 0x9000; c.DE = 4; c.pushedAF(0xFF, true);
+        check(e.service(E::SVC_R_TAPE, c) == E::T_DONE && memcmp(c.mem + 0x9000, "ABCD", 4) == 0, "the 11h data");
+        std::string listing;
+        check(e.catInto(true, "", listing) == E::OK && listing.find("2 not for LOAD") != std::string::npos
+              && listing.find("4 blocks, mounted") != std::string::npos, "CAT \"\": 4 blocks, 2 not for LOAD");
+        c.mem[0x5C74] = 0;
+        c.str("x");
+        check(e.service(E::SVC_TAPE_NAME, c) == E::R_IO, "SAVE with a TZX mounted: J");
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        check(e.service(E::SVC_W_TAPE, c) == E::R_IO, "W_TAPE to a TZX: J");
+        std::vector<uint8_t> after = readFile((troot + "/game.tzx").c_str());
+        check(std::string(after.begin(), after.end()) == tzx, "the TZX is unchanged");
+        c.mem[0x5C74] = 1;
+        c.str("cut.tzx");
+        check(e.service(E::SVC_TAPE_NAME, c) == E::T_DONE && e.tapBlocks() == 3, "a cut-short TZX: the blocks before the cut");
+        c.str("bad.tzx");
+        check(e.service(E::SVC_TAPE_NAME, c) == E::R_IO, "not a TZX: J");
+        e.buildListing("/", listing);
+        check(listing.find("TZX") != std::string::npos, "CAT shows TZX");
+        check(e.catInto(true, "game.tzx", listing) == E::OK && listing.find("Code  pic") != std::string::npos,
+              "CAT \"game.tzx\": its blocks");
+        c.mem[0x5C74] = 0;
+        e.unmount();
+        c.str("new.tzx");
+        check(e.service(E::SVC_TAPE_NAME, c) == E::R_NAME, "SAVE \"new.tzx\": F");
+    }
+
+    printf("\nCartridges\n");
+    {
+        std::string droot = root + "/dock";
+        mkdir(droot.c_str(), 0755);
+        DiskEngine de(droot);
+        typedef DiskEngine E;
+        std::vector<uint8_t> img;
+        writeBytes(droot + "/small.rom", std::string(10000, 'r'));
+        check(de.dock("small.rom") == E::R_END, "LOAD \"small.rom\": 0 OK, the statement ends");
+        check(de.takeDock(img) && img.size() == 9 + 2 * 8192, "a 10000-byte ROM: one bank, two chunks");
+        check(img.size() > 9 && img[0] == 0 && img[1] == 2 && img[2] == 2 && img[3] == 0, "the DOCK, chunks 0-1 ROM with images");
+        check(img.size() == 9 + 16384 && img[9] == 'r' && img[9 + 9999] == 'r' && img[9 + 10000] == 0xFF,
+              "the image, the short chunk filled with FFh");
+        check(E::dckValid(img.data(), img.size()), "a valid .DCK");
+        check(!de.takeDock(img), "taken once");
+        writeBytes(droot + "/big.rom", std::string(65537, 'r'));
+        check(de.dock("big.rom") == E::R_PARAM, "a ROM over 64K: Q");
+        std::string dck(9, '\0');
+        dck[0] = (char) 0xFE;
+        dck[1] = 2;
+        writeBytes(droot + "/ex.dck", dck + std::string(8192, 'e'));
+        check(de.dock("ex.dck") == E::R_END && de.takeDock(img) && img.size() == 9 + 8192, "LOAD \"ex.dck\": taken as it is");
+        writeBytes(droot + "/cut.dck", dck + std::string(100, 'e'));
+        check(de.dock("cut.dck") == E::R_PARAM && !de.takeDock(img), "a cut-short .DCK: Q, nothing docked");
+        check(de.dock("none.dck") == E::R_NAME, "a missing one: F");
+        FakeCpu dc;
+        dc.mem[0x5C3B] = 0x80;                            // FLAGS: run time
+        dc.mem[0x5C74] = 2;                               // T_ADDR: VERIFY
+        dc.str("ex.dck");
+        check(de.service(E::SVC_TAPE_NAME, dc) == E::R_PARAM, "VERIFY \"ex.dck\": Q");
+        dc.mem[0x5C74] = 1;
+        dc.str("ex.dck");
+        check(de.service(E::SVC_TAPE_NAME, dc) == E::R_END && de.takeDock(img), "LOAD through TAPE_NAME");
+        std::string listing;
+        de.buildListing("/", listing);
+        check(listing.find("DCK") != std::string::npos && listing.find("ROM") != std::string::npos, "CAT shows DCK and ROM");
     }
 
     printf("\nROM patches\n");

@@ -59,6 +59,8 @@ public:
     virtual uint16_t sp() = 0;
     virtual uint8_t peek(uint16_t addr) = 0;
     virtual void poke(uint16_t addr, uint8_t value) = 0;
+    // The SCLD's video mode (port FFh, bits 2-0), for COPY.
+    virtual uint8_t video() { return 0; }
 };
 
 class DiskEngine {
@@ -108,6 +110,23 @@ public:
     static const uint8_t SVC_CH_RESTORE = 0x15; // L = the stream: back to its start
     static const uint8_t SVC_CH_CAT = 0x16;     // CAT #s: HL, DE/BC as CAT_OPEN; IX = the stream
     static const uint8_t CH_EOF = 1;            // CH_IN: the end of the file (Report 8)
+    // The printer. HOME's P record has CH_OUT as its output routine, so
+    // LPRINT and LLIST come through SVC_CH_OUT as text for PRINT_TEXT; a
+    // bare COPY is SVC_PR_COPY, the screen as the printer would print it
+    // (the top 22 lines, one bit a dot) to copyNNN.bmp.
+    static const uint8_t SVC_PR_COPY = 0x17;
+    // The file picker: LOAD/VERIFY/MERGE "" with nothing mounted, and
+    // MOVE TO "". TAPE_NAME or MOVE_TO answers T_PICK; then the ROM prints
+    // PICK_CHAR's bytes (RST 10h, the upper screen) up to FFh, asks
+    // PICK_END (T_PICK: still picking; anything else is the command's
+    // answer, as TAPE_NAME's or MOVE_TO's would have been), and while
+    // picking reads a key: PICK_KEY with E/D/L/H the keyboard rows EFh, F7h,
+    // BFh, 7Fh answers 0 (nothing to do: the next key) or 1 (print again).
+    static const uint8_t SVC_PICK_CHAR = 0x18;
+    static const uint8_t SVC_PICK_KEY = 0x19;
+    static const uint8_t SVC_PICK_END = 0x1A;
+    static const uint8_t T_PICK = 0xFE;
+    static const uint8_t PICK_DONE = 0xFF;      // PICK_CHAR: the end of what to print
 
     // The tape functions' answers, below every report code.
     static const uint8_t T_NOT_OURS = 0;        // nothing mounted: the stock tape routine runs
@@ -145,6 +164,7 @@ public:
     static const uint8_t R_MEMORY = 0x03;       // 4 Out of memory
     static const uint8_t R_EOF = 0x07;          // 8 End of file
     static const uint8_t R_STREAM = 0x17;       // O Invalid stream: not a file channel
+    static const uint8_t R_END = 0xFF;           // "0 OK": the statement ends here (a dock)
 
     // The most entries a CAT listing shows; the rest are counted ("and 12
     // more").
@@ -178,6 +198,9 @@ public:
     // the tests. Returns OK or a report code. With a pattern ("*.tap"),
     // only the names that match it; none is F.
     uint8_t buildListing(const std::string& folder, std::string& out, const std::string& pattern = "");
+    // What CAT [name] lists: the folder (no name), a mounted tape (""), a
+    // tape's blocks, a folder or a pattern.
+    uint8_t catInto(bool arg, const std::string& name, std::string& out);
 
     // Wildcards: * any run of characters, ? any one; case ignored.
     static bool wildMatch(const char* pattern, const char* name);
@@ -216,6 +239,37 @@ public:
     uint8_t chRestore(int stream);
     uint8_t chCat(int stream, bool arg, const std::string& name);
     bool chIsOpen(int stream) const { return stream >= 0 && stream < STREAMS && chans_[stream].f; }
+
+    // The printer, for the tests (service() calls them). prOut takes a
+    // byte LPRINT or LLIST sent; prFlush writes what is waiting (a line not
+    // yet ended) to the file, between frames; prCopy writes the screen.
+    uint8_t prOut(uint8_t b);
+    uint8_t prFlush();
+    // Once a frame: the text waiting goes to the file after half a second
+    // with nothing more for the printer.
+    void prTick();
+    uint8_t prCopy(DiskCpu& cpu, std::string* written = nullptr);
+
+    // The picker, for the tests (service() calls them). pickStart answers
+    // T_PICK; command is LOAD's (1-3) or PICK_FOLDER for MOVE TO.
+    static const uint8_t PICK_FOLDER = 0xFF;
+    uint8_t pickStart(uint8_t command);
+    uint8_t pickKey(uint8_t rowEF, uint8_t rowF7, uint8_t rowBF, uint8_t row7F);
+    uint8_t pickEnd(DiskCpu& cpu);
+    std::string pickText();                     // what PICK_CHAR hands out, all of it
+    bool picking() const { return pickState_ == PK_OPEN; }
+    static const int PICK_ROWS = 19;            // lines 2-20
+    static const int PR_COLUMNS = 32;
+
+    // LOAD "x.dck" / LOAD "x.rom": the cartridge is checked now and docked
+    // by the firmware between frames, with a reset (takeDock). A .rom is
+    // a raw cartridge image: its 8K chunks go in the DOCK from chunk 0.
+    // Answers R_END (the statement ends), or a report.
+    uint8_t dock(const std::string& name);
+    // The cartridge waiting to be docked, as .DCK bytes; false if none.
+    bool takeDock(std::vector<uint8_t>& out);
+    // Whether .DCK bytes are whole (every header, every chunk image).
+    static bool dckValid(const uint8_t* data, size_t size);
 
     // The listing CAT "x.tap" and CAT "" print: the TAP's blocks.
     uint8_t buildTapListing(const std::string& path2068, std::string& out);
@@ -279,6 +333,35 @@ private:
         bool lastInCR = true;      // text: the last byte read ended a line
     };
     Channel chans_[STREAMS];
+    // The printer: the text not yet in the file, its column on the paper,
+    // and a control code's parameters still to come.
+    struct PickEntry {
+        std::string name;
+        bool folder;
+        const char* kind;
+    };
+    enum { PK_NONE, PK_OPEN, PK_PICKED, PK_QUIT };
+    int pickState_ = PK_NONE;
+    uint8_t pickCommand_ = 0;
+    std::string pickDir_;          // the folder being shown ("/" or "/x/")
+    std::vector<PickEntry> pickList_;
+    int pickAt_ = 0, pickTop_ = 0;
+    std::string pickOut_;
+    size_t pickOutPos_ = 0;
+    std::string pickChosen_;       // the 2068 path picked
+    void pickRead();
+    void pickLine(int row);
+    void pickPage();
+    std::string prText_;
+    int prColumn_ = 0;
+    int prQuiet_ = 0;              // frames since the last byte
+    bool prSuppress_ = true;
+    int prCtl_ = 0;
+    uint8_t prCtlCode_ = 0, prCtlLo_ = 0;
+    uint8_t prPut(const char* utf8);
+    uint8_t prTo(int column);
+    bool prFolder();
+    std::vector<uint8_t> dock_;   // a cartridge for takeDock
     uint8_t chWrite(Channel& c, const char* bytes, size_t n);
     uint8_t chWriteAt(Channel& c, long at, const char* bytes, size_t n);
     uint8_t chPut(Channel& c, uint8_t b);
@@ -289,15 +372,18 @@ private:
     long chSize(Channel& c);
     void chSweep(DiskCpu& cpu, int except);
     int chStreamOf(DiskCpu& cpu);
-    uint8_t catInto(bool arg, const std::string& name, std::string& out);
 
     std::string hostPath(const std::string& path2068) const;
     static const char* kindOf(const std::string& host, long size);
-    static bool scanTap(const std::string& host, std::vector<Block>& out);
+    // The blocks of a TAP or (by its name) a TZX; *skipped counts a TZX's
+    // data blocks the ROM can't load (turbo, pure data, direct recording).
+    static bool scanTap(const std::string& host, std::vector<Block>& out, unsigned* skipped = nullptr);
+    static bool scanTzx(FILE* f, long size, std::vector<Block>& out, unsigned& skipped);
     static std::string text(DiskCpu& cpu);   // DE/BC
     uint8_t readTape(DiskCpu& cpu);
     uint8_t writeTape(DiskCpu& cpu);
     uint8_t tapeName(DiskCpu& cpu);
+    uint8_t tapeNamed(DiskCpu& cpu, uint8_t command, const std::string& name);
     uint8_t loadNative(DiskCpu& cpu, uint8_t command, const std::string& name);
     uint8_t saveNative(DiskCpu& cpu, const std::string& name);
     uint8_t replace(DiskCpu& cpu);

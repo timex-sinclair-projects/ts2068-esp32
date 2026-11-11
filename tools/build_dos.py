@@ -51,6 +51,10 @@ def jp(addr):
     return bytes([0xC3, addr & 0xFF, addr >> 8]).hex()
 
 
+def word(addr):
+    return f"{addr & 0xFF:02x}{addr >> 8:02x}"
+
+
 def call(addr):
     return bytes([0xCD, addr & 0xFF, addr >> 8]).hex()
 
@@ -108,7 +112,9 @@ def home_patches(sym, pocket, dead):
         (0x0020, "cd 74 00 18 f7", None, "anchor: RST 20h, NEXT-CHAR (T_OSYN)"),
         (0x1433, "cd 89 28 20 06", None, "anchor: OPEN #'s comma: 1438h on the syntax pass only"),
         (0x0010, "c3 ed 11", None, "anchor: RST 10h, print A (H_PRINT_A)"),
-        (0x0A02, "f3 06 b0 21 00 40", None, "anchor: COPY, the screen to the printer (H_COPY)"),
+        (0x11B9, "00 05 bf 11 50", word(sym["CH_OUT"]) + "bf1150",
+         "the P record in the channel data CHANS starts from: its output 0500h (PRINT-OUT) -> "
+         "CH_OUT, so LPRINT and LLIST go to the engine as text (it sees the 'P')"),
         (0x1545, "3e 02 fd 36 02 00", None, "anchor: LIST (H_LIST)"),
         (0x0053, "e1 6e fd 75 00 ed 7b 3d 5c c3 54 13", None,
          "anchor: RST 8's tail; 0055h raises the report in L (H_ERROR_3)"),

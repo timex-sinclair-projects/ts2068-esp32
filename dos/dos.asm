@@ -70,6 +70,13 @@ SVC_CH_IN       EQU $13            ; CURCHL's next byte at CH_BYTE (0), CH_EOF (
 SVC_CH_CLOSE    EQU $14            ; L = the stream
 SVC_CH_RESTORE  EQU $15            ; L = the stream: back to its start
 SVC_CH_CAT      EQU $16            ; CAT #s: HL, DE/BC as CAT_OPEN; IX = the stream
+SVC_PR_COPY     EQU $17            ; COPY: the screen to /print/copyNNN.bmp
+SVC_PICK_CHAR   EQU $18            ; the picker: A = the next byte to print, FFh at the end
+SVC_PICK_KEY    EQU $19            ; E/D/L/H = keyboard rows EFh/F7h/BFh/7Fh: 0 the next
+                                   ;   key, 1 print again
+SVC_PICK_END    EQU $1A            ; T_PICK: still picking; else the command's answer
+T_PICK          EQU $FE            ; TAPE_NAME, MOVE_TO: the picker is open
+PICK_DONE       EQU $FF            ; PICK_CHAR: nothing more to print
 
 ; Answers of the tape services, below the report codes (all 4 or more).
 T_NOT_OURS      EQU 0              ; the stock routine runs
@@ -132,7 +139,6 @@ H_CHECK_END     EQU $1B44          ; HOME: CHECK-END: CALL SYNTAX-Z / RET NZ / P
 H_EXPT_1NUM     EQU $1BE5          ; HOME: class 06h, a numeric expression
 H_EXPT_STR      EQU $1BEF          ; HOME: class 0Ah, a string expression
 H_EXPT_STR_ONLY EQU $1BEF          ; (the same: class 0Ah doesn't check the end)
-H_COPY          EQU $0A02          ; HOME: COPY, the screen to the printer
 H_LIST          EQU $1545          ; HOME: LIST, class 05h: it parses its own #n and n
 H_RESTORE       EQU $1E9D          ; HOME: RESTORE after class 03h (the number stacked)
 H_USE_ZERO      EQU $1C51          ; HOME: a 0 on the calculator stack at run time
@@ -328,6 +334,8 @@ X_PGPSTR:
         push    af
         ld      a,SVC_TAPE_NAME
         out     (P_SVC),a
+        cp      T_PICK
+        call    z,X_PICK           ; LOAD "": the picker, then the name picked
         and     a
         jr      z,.go              ; T_NOT_OURS
         cp      T_DONE
@@ -393,6 +401,49 @@ X_REPORT:
         ld      (X_PTR),hl
         pop     hl
         jp      X_ERROR
+
+; X_PICK -- the file picker for LOAD/VERIFY/MERGE "": print what the
+; engine sends on the upper screen, and hand it the keys, until it has an
+; answer for TAPE_NAME (in A).
+X_PICK: ld      a,$FE              ; the upper screen
+        HOMECALLX H_CHAN_OPEN
+.print: ld      a,SVC_PICK_CHAR
+        out     (P_SVC),a
+        cp      PICK_DONE
+        jr      z,.end
+        HOMECALLX H_PRINT_A
+        jr      .print
+.end:   ld      a,SVC_PICK_END
+        out     (P_SVC),a
+        cp      T_PICK
+        ret     nz
+.up:    xor     a                  ; wait until no key is down
+        in      a,($FE)
+        and     $1F
+        cp      $1F
+        jr      nz,.up
+.down:  xor     a                  ; then for one
+        in      a,($FE)
+        and     $1F
+        cp      $1F
+        jr      z,.down
+        ld      a,$EF              ; 6 7 8 (and 0 9)
+        in      a,($FE)
+        ld      e,a
+        ld      a,$F7              ; 5
+        in      a,($FE)
+        ld      d,a
+        ld      a,$BF              ; ENTER
+        in      a,($FE)
+        ld      l,a
+        ld      a,$7F              ; SPACE
+        in      a,($FE)
+        ld      h,a
+        ld      a,SVC_PICK_KEY
+        out     (P_SVC),a
+        and     a
+        jr      z,.up
+        jr      .print
 
 ; X_R_TAPE -- R_TAPE (00FCh) jumps here. A = the flag wanted (00h a header,
 ; FFh data), carry set to LOAD (clear to VERIFY), IX = where, DE = how many.
@@ -614,7 +665,12 @@ MOVE:   call    SKIP_SPACES
         ret     z
         call    POP_STR
         ld      a,SVC_MOVE_TO
-        jr      SVC_ONLY
+        out     (P_SVC),a
+        cp      T_PICK
+        call    z,PICK             ; MOVE TO "": the picker
+        and     a
+        jp      nz,REPORT
+        ret
 .two:   call    TWO_NAMES
         ret     z
         ld      a,SVC_MOVE
@@ -626,7 +682,54 @@ SVC_ONLY:
         ret
 
 ;------------------------------------------------------------------------------
-; COPY                 the stock COPY: the screen to the printer
+; PICK -- the folder picker for MOVE TO "": as the EXROM's X_PICK, through
+; HOMECALL. Answers MOVE_TO's answer in A.
+;------------------------------------------------------------------------------
+PICK:   ld      a,2                ; the upper screen
+        ld      hl,H_CHAN_OPEN
+        call    HOMECALL
+.print: ld      a,SVC_PICK_CHAR
+        out     (P_SVC),a
+        cp      PICK_DONE
+        jr      z,.end
+        ld      hl,H_PRINT_A
+        call    HOMECALL
+        jr      .print
+.end:   ld      a,SVC_PICK_END
+        out     (P_SVC),a
+        cp      T_PICK
+        ret     nz
+.up:    xor     a
+        in      a,($FE)
+        and     $1F
+        cp      $1F
+        jr      nz,.up
+.down:  xor     a
+        in      a,($FE)
+        and     $1F
+        cp      $1F
+        jr      z,.down
+        ld      a,$EF
+        in      a,($FE)
+        ld      e,a
+        ld      a,$F7
+        in      a,($FE)
+        ld      d,a
+        ld      a,$BF
+        in      a,($FE)
+        ld      l,a
+        ld      a,$7F
+        in      a,($FE)
+        ld      h,a
+        ld      a,SVC_PICK_KEY
+        out     (P_SVC),a
+        and     a
+        jr      z,.up
+        jr      .print
+
+;------------------------------------------------------------------------------
+; COPY                 the screen to the printer, which is the card: the
+;                      engine writes /print/copyNNN.bmp
 ; COPY "a" TO "b"      copy a file; a pattern copies into a folder, listing
 ;                      each name as copied or exists
 ;------------------------------------------------------------------------------
@@ -634,9 +737,8 @@ COPY:   call    AT_END
         jr      nz,.two
         call    RUNTIME
         ret     z                  ; the syntax pass: accepted
-        ld      hl,H_COPY          ; run time: the stock COPY, with the stack and
-        scf                        ;   T_ADDR as class 00h would have left them
-        ret
+        ld      a,SVC_PR_COPY
+        jr      SVC_ONLY
 .two:   call    TWO_NAMES
         ret     z
         ld      a,SVC_COPY

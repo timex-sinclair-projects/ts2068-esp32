@@ -2155,6 +2155,7 @@ for(;;) {
 #ifdef ESP2068_TSPICO
     TSPico::frame();
 #endif
+    if (Z80Ops::is2068 && DosDisk::frame()) ESPectrum::reset();   // LOAD "x.dck"
 
     // Copy audio buffer vars for finish buffer code
     faudbufcntover = audbufcntover;

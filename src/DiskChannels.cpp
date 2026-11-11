@@ -51,6 +51,15 @@ bool sameNoCase(const std::string& a, const std::string& b) {
     return true;
 }
 
+// The block graphics, 80h-8Fh: bit 0 the top right, 1 top left, 2 bottom
+// right, 3 bottom left.
+const char* const BLOCKS[16] = {
+    " ", "\u259D", "\u2598", "\u2580", "\u2597", "\u2590", "\u259A", "\u259C",
+    "\u2596", "\u259E", "\u258C", "\u259B", "\u2584", "\u259F", "\u2599", "\u2588"};
+
+const char* const PRINT_FOLDER = "/print";
+const char* const PRINT_TEXT = "/print/printer.txt";
+
 const size_t MAX_NAME = 64;
 const int MAX_RECLEN = 254;    // a record and its CR fit in 255
 
@@ -379,4 +388,169 @@ void DiskEngine::chSweep(DiskCpu& cpu, int except) {
         }
         if (!live) chClose(s);
     }
+}
+
+//------------------------------------------------------------------------------
+// The printer: LPRINT and LLIST as text in /print/printer.txt (appended to),
+// COPY as copyNNN.bmp. The text is laid out the way the 2040 lays it out:
+// 32 columns, a line full at the 32nd, the comma at 0 or 16, TAB and AT's
+// column across the paper.
+//------------------------------------------------------------------------------
+
+bool DiskEngine::prFolder() {
+    std::string host = hostPath(PRINT_FOLDER);
+    struct stat st;
+    if (stat(host.c_str(), &st) == 0) return S_ISDIR(st.st_mode);
+    return mkdir(host.c_str(), 0755) == 0;
+}
+
+uint8_t DiskEngine::prFlush() {
+    if (prText_.empty()) return OK;
+    std::string text;
+    text.swap(prText_);
+    if (!prFolder()) return R_IO;
+    FILE* f = fopen(hostPath(PRINT_TEXT).c_str(), "ab");
+    if (!f) return R_IO;
+    bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
+    ok = (fclose(f) == 0) && ok;
+    return ok ? OK : R_IO;
+}
+
+// One character on the paper (some take more than a byte in UTF-8): a full
+// line feeds first.
+uint8_t DiskEngine::prPut(const char* utf8) {
+    if (prColumn_ >= PR_COLUMNS) {
+        prText_ += '\n';
+        prColumn_ = 0;
+    }
+    prText_ += utf8;
+    prColumn_++;
+    prSuppress_ = utf8[0] == ' ' && !utf8[1];
+    return OK;
+}
+
+// To a column: spaces, through a new line if it is behind us.
+uint8_t DiskEngine::prTo(int column) {
+    column %= PR_COLUMNS;
+    if (column < prColumn_ && prColumn_ < PR_COLUMNS) {
+        prText_ += '\n';
+        prColumn_ = 0;
+    } else if (prColumn_ >= PR_COLUMNS && column > 0) {
+        prText_ += '\n';
+        prColumn_ = 0;
+    }
+    while (prColumn_ < column) prPut(" ");
+    return OK;
+}
+
+void DiskEngine::prTick() {
+    if (!prText_.empty() && ++prQuiet_ >= 30) prFlush();
+}
+
+uint8_t DiskEngine::prOut(uint8_t b) {
+    prQuiet_ = 0;
+    if (prCtl_) {                                       // a control code's parameters
+        if (--prCtl_) {
+            prCtlLo_ = b;
+            return OK;
+        }
+        if (prCtlCode_ == 0x16) return prTo(b);         // AT line,column: the column
+        if (prCtlCode_ == 0x17) return prTo(prCtlLo_ | (b << 8));
+        return OK;
+    }
+    uint8_t r = OK;
+    if (b == 0x0D) {
+        prText_ += '\n';
+        prColumn_ = 0;
+        prSuppress_ = true;
+        if (prText_.size() >= 512) r = prFlush();
+        return r;
+    }
+    if (b == 0x06) return prTo(prColumn_ < 16 && prColumn_ < PR_COLUMNS ? 16 : 0);   // the comma
+    if (b >= 0x10 && b <= 0x17) {                       // INK .. OVER: one byte; AT, TAB: two
+        prCtlCode_ = b;
+        prCtl_ = b >= 0x16 ? 2 : 1;
+        return OK;
+    }
+    bool function;
+    const char* word = extraKeyword(b, function);
+    if (b >= 0xA5 || word) {                            // as chToken: the screen's spacing
+        if (!word) {
+            word = KEYWORDS[b - 0xA5];
+            function = b < 0xC5;
+        }
+        if (!function && !prSuppress_) prPut(" ");
+        char one[2] = {0, 0};
+        for (const char* p = word; *p; p++) {
+            one[0] = *p;
+            prPut(one);
+        }
+        char last = word[strlen(word) - 1];
+        bool noTrail = b >= 0xA5 && b <= 0xA7;
+        if (!noTrail && (isalpha((unsigned char) last) || last == '$')) prPut(" ");
+        return OK;
+    }
+    if (b < 0x20) return OK;                            // other control codes
+    if (b == 0x60) return prPut("£");              // the pound sign
+    if (b >= 0x80 && b <= 0x8F) return prPut(BLOCKS[b & 0x0F]);
+    if (b >= 0x90) return prPut("?");                   // a UDG: no telling what it is
+    char one[2] = {(char) b, 0};
+    return prPut(one);
+}
+
+namespace {
+
+void put16(std::string& s, uint16_t v) { s += (char) (v & 0xFF); s += (char) (v >> 8); }
+void put32(std::string& s, uint32_t v) { put16(s, v & 0xFFFF); put16(s, v >> 16); }
+
+} // namespace
+
+// COPY: the top 22 lines of the screen being shown, as the printer prints
+// them (a dot for each ink pixel), in a 1-bit BMP. Hi-res is 512 dots wide.
+uint8_t DiskEngine::prCopy(DiskCpu& cpu, std::string* written) {
+    uint8_t video = cpu.video() & 0x07;
+    bool hires = video & 0x04;
+    uint16_t base = (!hires && (video & 0x03) == 0x01) ? 0x6000 : 0x4000;
+    const int rows = 176, bytes = hires ? 64 : 32, width = bytes * 8;
+    std::string bmp;
+    uint32_t offset = 14 + 40 + 8, size = offset + rows * bytes;
+    bmp += "BM";
+    put32(bmp, size);
+    put32(bmp, 0);
+    put32(bmp, offset);
+    put32(bmp, 40);
+    put32(bmp, width);
+    put32(bmp, rows);
+    put16(bmp, 1);
+    put16(bmp, 1);                                      // a bit a pixel
+    put32(bmp, 0);
+    put32(bmp, rows * bytes);
+    put32(bmp, 2835);                                   // 72 dpi
+    put32(bmp, 2835);
+    put32(bmp, 2);
+    put32(bmp, 2);
+    put32(bmp, 0x00FFFFFF);                             // 0: paper
+    put32(bmp, 0x00000000);                             // 1: a dot
+    for (int y = rows - 1; y >= 0; y--) {               // bottom up
+        uint16_t line = (uint16_t) (((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2));
+        for (int x = 0; x < bytes; x++) {
+            if (hires) bmp += (char) cpu.peek((x & 1 ? 0x6000 : 0x4000) + line + x / 2);
+            else bmp += (char) cpu.peek(base + line + x);
+        }
+    }
+    if (!prFolder()) return R_IO;
+    char name[32];
+    for (int n = 1; n <= 999; n++) {
+        snprintf(name, sizeof name, "%s/copy%03d.bmp", PRINT_FOLDER, n);
+        std::string host = hostPath(name);
+        struct stat st;
+        if (stat(host.c_str(), &st) == 0) continue;
+        FILE* f = fopen(host.c_str(), "wb");
+        if (!f) return R_IO;
+        bool ok = fwrite(bmp.data(), 1, bmp.size(), f) == bmp.size();
+        ok = (fclose(f) == 0) && ok;
+        if (ok && written) *written = name;
+        return ok ? OK : R_IO;
+    }
+    return R_IO;                                        // copy999.bmp is there: full
 }
