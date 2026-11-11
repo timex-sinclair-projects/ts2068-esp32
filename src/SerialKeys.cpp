@@ -8,6 +8,8 @@
 
 #include "driver/uart.h"
 #include "fabgl.h"
+#include "SCLD.h"
+#include "Video.h"
 
 namespace {
 
@@ -27,6 +29,7 @@ Chord queue[QUEUE_SIZE];
 int qHead = 0, qTail = 0;
 
 bool installed = false;
+bool dumpRequested = false;     // Ctrl-V: send the screen (see dumpScreen())
 uint8_t pendingMods = 0; // from Ctrl-A / Ctrl-B, for the next key
 bool lastWasCR = false;
 
@@ -70,6 +73,7 @@ void decode(uint8_t c) {
         case 0x02: pendingMods |= MOD_CS; return;
         case 0x03: push(MOD_CS, fabgl::VK_SPACE); return;
         case 0x05: push(MOD_CS | MOD_SS, fabgl::VK_NONE); return;
+        case 0x16: dumpRequested = true; return;
     }
 
     for (int i = 0; SYMBOLS[i]; i++) {
@@ -93,6 +97,72 @@ void inject(fabgl::Keyboard* kbd, const Chord& ch, bool down) {
         if (ch.mods & MOD_SS) kbd->injectVirtualKey(fabgl::VK_LCTRL, false, false);
         if (ch.mods & MOD_CS) kbd->injectVirtualKey(fabgl::VK_LSHIFT, false, false);
     }
+}
+
+// Run-length pairs (count 1-255, byte), straight to UART0: stdout would
+// turn 0Ah into 0Dh 0Ah.
+struct Rle {
+    uint8_t buf[256];
+    int n = 0, total = 0;
+    int run = 0;
+    uint8_t val = 0;
+    void flushBuf() { if (n) uart_write_bytes(UART_NUM_0, (const char*) buf, n); total += n; n = 0; }
+    void emit() {
+        if (!run) return;
+        buf[n++] = (uint8_t) run;
+        buf[n++] = val;
+        if (n >= (int) sizeof buf - 2) flushBuf();
+        run = 0;
+    }
+    void put(uint8_t b) {
+        if (run && (b != val || run == 255)) emit();
+        val = b;
+        run++;
+    }
+    void end() { emit(); flushBuf(); }
+};
+
+// Counts the RLE bytes a block will take, so the header can carry them.
+template <typename F> int rleSize(int count, F byteAt) {
+    int size = 0, run = 0;
+    uint8_t val = 0;
+    for (int i = 0; i < count; i++) {
+        uint8_t b = byteAt(i);
+        if (run && (b != val || run == 255)) { size += 2; run = 0; }
+        val = b;
+        run++;
+    }
+    return run ? size + 2 : size;
+}
+
+template <typename F> void rleSend(int count, F byteAt) {
+    Rle r;
+    for (int i = 0; i < count; i++) r.put(byteAt(i));
+    r.end();
+}
+
+// The 2068's screen memory (HOME RAM 4000h-7FFFh) and the VGA frame drawn
+// from it, for tools/sendkeys.py {SHOT} and tools/check_screen.py, which
+// redraws the frame from the memory independently and compares. Called
+// between CPU::loop() and the next frame, so the frame matches the memory.
+void dumpScreen() {
+    const int W = 640, H = 240;
+    auto mem = [](int i) -> uint8_t { return SCLD::homePage(2 + (i >> 13))[i & 0x1FFF]; };
+    auto fb = [](int i) -> uint8_t { return VIDEO::vga.frameBuffer[i / 640][(i % 640) ^ 2]; };
+
+    fflush(stdout);
+    printf("\n#SHOT mode=%02x hirescol=%d flash=%d border=%d colors=",
+           SCLD::videoMode, SCLD::hiresInkPaper, VIDEO::flashing ? 1 : 0, VIDEO::borderColor);
+    for (int i = 0; i < 16; i++) printf("%02x", VIDEO::spectrum_colors[i] & 0xFF);
+    printf(" w=%d h=%d\n", W, H);
+    printf("#MEM %d\n", rleSize(16384, mem));
+    fflush(stdout);
+    rleSend(16384, mem);
+    printf("#FB %d\n", rleSize(W * H, fb));
+    fflush(stdout);
+    rleSend(W * H, fb);
+    printf("#END\n");
+    fflush(stdout);
 }
 
 } // namespace
@@ -127,6 +197,11 @@ void SerialKeys::frame(fabgl::Keyboard* kbd, int64_t elapsedUs) {
     int n;
     while ((n = uart_read_bytes(UART_NUM_0, buf, sizeof buf, 0)) > 0) {
         for (int i = 0; i < n; i++) decode(buf[i]);
+    }
+
+    if (dumpRequested) {
+        dumpRequested = false;
+        dumpScreen();
     }
 
     switch (state) {

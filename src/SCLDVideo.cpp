@@ -61,3 +61,22 @@ void SCLDVideo::hiresInkPaperColors(uint8_t hiresInkPaper, uint8_t& inkOut, uint
     inkOut = hiresInkPaper & 0x07;
     paperOut = inkOut ^ 0x07;
 }
+
+void SCLDVideo::cellBytes(uint8_t mode, const uint8_t* dfile1, const uint8_t* dfile2,
+                          int row, int col, uint8_t& data, uint8_t& second) {
+
+    mode &= 0x07;
+    int bmp = standardBitmapOffset(row, col);
+    int att = standardAttributeOffset(row, col);
+    const uint8_t* base = (mode & 0x01) ? dfile2 : dfile1;   // FUSE's display_get_addr()
+
+    data = base[bmp];
+
+    switch (mode) {
+        case 0: case 1: second = base[att]; break;          // 8x8 attributes from the same file
+        case 2: case 3: second = dfile2[bmp]; break;        // 8x1 attributes, DFILE2's bitmap area
+        case 4: case 5: second = base[att]; break;          // hi-res: attribute bytes as pixels
+        case 6:         second = dfile2[bmp]; break;        // true hi-res
+        default:        second = data; break;               // 7: doubled columns
+    }
+}

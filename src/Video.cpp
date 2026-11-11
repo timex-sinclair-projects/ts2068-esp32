@@ -1058,20 +1058,16 @@ IRAM_ATTR void VIDEO::EndFrame() {
 // and a hi-res interleave-order bug, both real, both shipped before
 // being caught by that cross-reference).
 //
-// Only standard mode (SCLD::videoMode == 0x00) and hi-res mode
-// (== 0x06 exactly, FUSE's "HIRES") are rendered correctly. Dual-file
-// (bit 0), hi-color (bit 1), and the other three DECR values that also
-// have bit 2 set (0x04 HIRESATTR, 0x05 HIRESATTRALTD, 0x07
-// HIRESDOUBLECOL -- see SCLDVideo.h) all fall back to rendering as
-// standard mode from DFILE1 -- wrong for those modes specifically, but
-// "shows something recognizable" rather than a crash or a blank
-// screen. Hi-color is deferred past v1 anyway (PLAN.md's open
-// decisions); the others are real gaps, now precisely scoped instead
-// of vaguely "not confirmed".
+// All eight screen modes (DECR bits 2..0) are drawn: which two bytes
+// each cell takes from which display file is SCLDVideo::cellBytes(),
+// matched against FUSE. The screen always comes from HOME RAM, whatever
+// is paged in at 0x4000-0x7FFF, as the SCLD fetches it.
 IRAM_ATTR void VIDEO::RenderFrame2068() {
 
-    uint8_t* dfile1 = SCLD::memChunk[2]; // DFILE1_BASE (0x4000) == chunk 2, see SCLD.h
-    uint8_t* dfile2 = SCLD::memChunk[3]; // DFILE2_BASE (0x6000) == chunk 3
+    // The SCLD fetches the screen from HOME RAM, never from a DOCK or
+    // EXROM page mapped over it.
+    const uint8_t* dfile1 = SCLD::homePage(2); // DFILE1_BASE (0x4000) == chunk 2, see SCLD.h
+    const uint8_t* dfile2 = SCLD::homePage(3); // DFILE2_BASE (0x6000) == chunk 3
     if (!dfile1 || !dfile2) return; // SCLD::allocateMemory() hasn't run yet
 
     const int fbTop = 24;
@@ -1080,7 +1076,17 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
     const int hRes = 640;
     const int hBorder = 64; // 32 2068 pixels each side; a multiple of 4 keeps x ^ 2 within a word
 
-    uint8_t borderByte = zxColor(borderColor, 0);
+    const uint8_t mode = SCLD::videoMode & 0x07;
+    const bool hires = mode & 0x04;
+
+    uint8_t hiresInk = 0, hiresPaper = 7;
+    if (hires) SCLDVideo::hiresInkPaperColors(SCLD::hiresInkPaper, hiresInk, hiresPaper);
+    uint8_t hiresInkByte = zxColor(hiresInk, 0);
+    uint8_t hiresPaperByte = zxColor(hiresPaper, 0);
+
+    // In hi-res the border takes the paper colour, not port FEh's (FUSE's
+    // scld_dec_write() -> display_set_hires_border()).
+    uint8_t borderByte = hires ? hiresPaperByte : zxColor(borderColor, 0);
 
     for (int line = 0; line < fbTop; line++) {
         memset(vga.frameBuffer[line], borderByte, hRes);
@@ -1088,13 +1094,6 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
     for (int line = fbTop + fbActive; line < fbTop + fbActive + fbBottom; line++) {
         memset(vga.frameBuffer[line], borderByte, hRes);
     }
-
-    bool hires = SCLD::videoMode == 0x06; // FUSE's HIRES exactly -- see SCLDVideo.h
-
-    uint8_t hiresInk = 0, hiresPaper = 7;
-    if (hires) SCLDVideo::hiresInkPaperColors(SCLD::hiresInkPaper, hiresInk, hiresPaper);
-    uint8_t hiresInkByte = zxColor(hiresInk, 0);
-    uint8_t hiresPaperByte = zxColor(hiresPaper, 0);
 
     // The I2S DMA sends each 32-bit word's bytes in the order 2,3,0,1, so
     // pixel x lives at byte x ^ 2 (as in GraphicsR2G2B2S2Swapped::dot()).
@@ -1104,38 +1103,27 @@ IRAM_ATTR void VIDEO::RenderFrame2068() {
         memset(vga.frameBuffer[fbTop + row] + hBorder + 512, borderByte, hRes - hBorder - 512);
         uint8_t* out = vga.frameBuffer[fbTop + row] + hBorder;
 
-        if (hires) {
+        for (int col = 0; col < 32; col++) {
+            uint8_t data, second;
+            SCLDVideo::cellBytes(mode, dfile1, dfile2, row, col, data, second);
+            uint8_t pixels[16];
+            uint8_t* dst = out + col * 16;
 
-            for (int col = 0; col < 32; col++) {
-                int bmpOffset = SCLDVideo::standardBitmapOffset(row, col);
-                uint8_t pixels[16];
-                SCLDVideo::expandHiresBytePair(dfile1[bmpOffset], dfile2[bmpOffset], pixels);
-                uint8_t* dst = out + col * 16;
+            if (hires) {
+                SCLDVideo::expandHiresBytePair(data, second, pixels);
                 for (int i = 0; i < 16; i++) dst[i ^ 2] = pixels[i] ? hiresInkByte : hiresPaperByte;
-            }
-
-        } else {
-
-            for (int col = 0; col < 32; col++) {
-                int bmpOffset = SCLDVideo::standardBitmapOffset(row, col);
-                uint8_t bmp = dfile1[bmpOffset];
-                uint8_t att = dfile1[SCLDVideo::standardAttributeOffset(row, col)];
-
+            } else {
+                uint8_t att = second;
                 // FLASH (bit 7): swap the ink/paper fields on alternating
                 // frames, reusing the same VIDEO::flashing toggle the
-                // Spectrum renderers already maintain, rather than
-                // reimplementing frame-parity tracking here.
+                // Spectrum renderers already maintain.
                 if ((att & 0x80) && VIDEO::flashing) {
                     att = (att & 0xC0) | ((att & 0x07) << 3) | ((att >> 3) & 0x07);
                 }
-
                 bool bright = att & 0x40;
-                uint8_t pixels[16];
-                SCLDVideo::expandStandardByte(bmp, att, pixels);
-                uint8_t* dst = out + col * 16;
+                SCLDVideo::expandStandardByte(data, att, pixels);
                 for (int i = 0; i < 16; i++) dst[i ^ 2] = zxColor(pixels[i], bright);
             }
-
         }
 
     }

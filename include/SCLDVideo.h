@@ -58,6 +58,10 @@ reference library's summarized docs hadn't caught:
     sourcing if implementing them later. Video.cpp's caller is
     responsible for only invoking hi-res rendering when
     SCLD::videoMode == 0x06 exactly, not just "bit 2 is set".
+    (Superseded 2026-11-11: cellBytes() below now sources the bytes for
+    all eight DECR modes, matching FUSE's display_render.c; the block
+    expansion above is right for every hi-res mode once the right two
+    bytes are passed in.)
 
 Based on ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
 Copyright (c) 2023-2025 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
@@ -125,6 +129,29 @@ public:
     // port 0xFF table. inkOut/paperOut are 0..7, same palette as
     // expandStandardByte()'s out[] values.
     static void hiresInkPaperColors(uint8_t hiresInkPaper, uint8_t& inkOut, uint8_t& paperOut);
+
+    // The two bytes the SCLD fetches for byte column `col` of pixel row
+    // `row` in screen mode `mode` (DECR bits 2..0), from the two display
+    // files (dfile1 = HOME RAM 0x4000, dfile2 = 0x6000). Matches FUSE's
+    // display_write_if_dirty_timex() / display_get_attr_byte()
+    // (display_render.c) and display_get_addr() (display.h): bit 0 picks
+    // the file the bitmap byte comes from, bit 1 takes attributes 8x1
+    // from DFILE2's bitmap area, bit 2 is hi-res.
+    //
+    //   mode  data (bitmap)        second
+    //   0     DFILE1 bitmap        DFILE1 attribute (8x8)   standard
+    //   1     DFILE2 bitmap        DFILE2 attribute (8x8)   second screen
+    //   2     DFILE1 bitmap        DFILE2 bitmap, same row  extended colour (8x1)
+    //   3     DFILE2 bitmap        DFILE2 bitmap, same row  (the same byte as data)
+    //   4     DFILE1 bitmap        DFILE1 attribute area    hi-res, right half from attributes
+    //   5     DFILE2 bitmap        DFILE2 attribute area    the same from the second screen
+    //   6     DFILE1 bitmap        DFILE2 bitmap            true hi-res
+    //   7     DFILE2 bitmap        the same byte again      hi-res, doubled columns
+    //
+    // In modes 0-3 `second` is an attribute byte (expandStandardByte());
+    // in 4-7 it is the right-hand 8 pixels (expandHiresBytePair()).
+    static void cellBytes(uint8_t mode, const uint8_t* dfile1, const uint8_t* dfile2,
+                          int row, int col, uint8_t& data, uint8_t& second);
 
 };
 

@@ -17,6 +17,8 @@ PRINT, as on the real keyboard.
   Ctrl-B           CAPS SHIFT with the next key
   Ctrl-C           BREAK (CAPS SHIFT + SPACE)
   Ctrl-E           CAPS SHIFT + SYMBOL SHIFT (extended mode)
+  Ctrl-V           send the screen: screen memory and the VGA frame
+                   (tools/sendkeys.py {SHOT}, tools/check_screen.py)
 
 Every 300 frames it also prints the emulation time per frame, against the
 2068's 16639 us frame, to show whether the emulator keeps full speed.

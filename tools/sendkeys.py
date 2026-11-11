@@ -9,6 +9,9 @@ the keys that have no character:
   {LEFT} {DOWN} {UP} {RIGHT}           CAPS+5 / 6 / 7 / 8
   {SS}x  {CS}x                         SYMBOL SHIFT or CAPS SHIFT with key x
   {WAIT}                               pause one second
+  {SHOT}                               save the screen (memory + VGA frame) as
+                                       shot-N.bin in --shot-dir, for
+                                       tools/check_screen.py
 
 Examples:
   tools/sendkeys.py /dev/cu.wchusbserial10 'p"hello"{ENTER}'
@@ -56,6 +59,8 @@ def encode(text):
             yield part.encode("ascii"), len(part)
         elif m.group(1) == "WAIT":
             yield None, 1
+        elif m.group(1) == "SHOT":
+            yield "SHOT", 0
         elif m.group(1) in NAMED:
             b = NAMED[m.group(1)]
             # SS/CS are prefixes for the next key: no key of their own.
@@ -99,10 +104,47 @@ def drain(s, seconds):
             sys.stdout.flush()
 
 
-def send(s, text, per_key=SECONDS_PER_KEY):
+def shot(s, path, timeout=60.0):
+    """Asks the firmware for a screen dump and saves it, from #SHOT to #END."""
+    s.write(b"\x16")
+    buf = b""
+    end = time.time() + timeout
+    while time.time() < end:
+        buf += s.read(65536)
+        start = buf.find(b"#SHOT")
+        if start >= 0 and b"#END" in buf[start:] and complete(buf[start:]):
+            data = buf[start:buf.index(b"#END", start) + 4]
+            with open(path, "wb") as f:
+                f.write(data)
+            print(f"[saved {path}, {len(data)} bytes]")
+            return
+    sys.exit("no screen dump came back")
+
+
+def complete(buf):
+    """True once both RLE blocks are in (their sizes are in the headers)."""
+    pos = buf.find(b"\n") + 1
+    for tag in (b"#MEM ", b"#FB "):
+        if not buf.startswith(tag, pos):
+            return False
+        nl = buf.find(b"\n", pos)
+        if nl < 0:
+            return False
+        pos = nl + 1 + int(buf[pos + len(tag):nl])
+        if pos > len(buf):
+            return False
+    return buf.startswith(b"#END", pos)
+
+
+def send(s, text, per_key=SECONDS_PER_KEY, shot_dir=".", shots=None):
+    shots = shots if shots is not None else [0]
     for data, keys in encode(text):
         if data is None:
             drain(s, 1.0)
+            continue
+        if data == "SHOT":
+            shots[0] += 1
+            shot(s, f"{shot_dir}/shot-{shots[0]}.bin")
             continue
         s.write(data)
         drain(s, keys * per_key)
@@ -150,6 +192,7 @@ def main():
     ap.add_argument("--boot-wait", type=float, default=1.5,
                     help="seconds after boot before typing (the TS-Pico ROM needs longer)")
     ap.add_argument("--key-time", type=float, default=SECONDS_PER_KEY, help="seconds per key")
+    ap.add_argument("--shot-dir", default=".", help="where {SHOT} saves screen dumps")
     args = ap.parse_args()
 
     s = open_port(args.port)
@@ -157,7 +200,7 @@ def main():
     if args.interactive:
         interactive(s)
     else:
-        send(s, args.keys, args.key_time)
+        send(s, args.keys, args.key_time, args.shot_dir)
         drain(s, args.listen)
 
 

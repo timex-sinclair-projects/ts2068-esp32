@@ -150,6 +150,57 @@ int main() {
         }
     }
 
+    // ---- cellBytes: which bytes each of the eight DECR modes fetches ----
+    // Offsets worked out by hand from the Spectrum layout, not from
+    // standardBitmapOffset(), and the mode table from FUSE's
+    // display_render.c (display_write_if_dirty_timex) and display.h
+    // (display_get_addr: bit 0 adds ALTDFILE_OFFSET).
+    printf("\n-- cellBytes (all eight modes) --\n");
+    {
+        static uint8_t d1[8192], d2[8192];
+        for (int i = 0; i < 8192; i++) {
+            d1[i] = (uint8_t) (i * 7 + 1);
+            d2[i] = (uint8_t) (i * 13 + 5);
+        }
+        struct Cell { int row, col, bmp, att; };
+        const Cell cells[] = {
+            {   0,  0, 0x0000, 0x1800 },
+            {   9,  5, 0x0125, 0x1825 },   // char row 1, pixel line 1
+            { 100, 31, 0x0C9F, 0x199F },   // middle third, char row 12, line 4
+            { 191, 17, 0x17F1, 0x1AF1 },   // last line
+        };
+        bool ok[8] = { true, true, true, true, true, true, true, true };
+        for (const Cell& c : cells) {
+            uint8_t want[8][2] = {
+                { d1[c.bmp], d1[c.att] },   // 0 standard
+                { d2[c.bmp], d2[c.att] },   // 1 second screen
+                { d1[c.bmp], d2[c.bmp] },   // 2 extended colour: 8x1 attributes from DFILE2's bitmap
+                { d2[c.bmp], d2[c.bmp] },   // 3 extended colour, second screen
+                { d1[c.bmp], d1[c.att] },   // 4 hi-res, right half from DFILE1 attributes
+                { d2[c.bmp], d2[c.att] },   // 5 the same, second screen
+                { d1[c.bmp], d2[c.bmp] },   // 6 true hi-res
+                { d2[c.bmp], d2[c.bmp] },   // 7 doubled columns from DFILE2
+            };
+            for (int m = 0; m < 8; m++) {
+                uint8_t data, second;
+                // Upper DECR bits (hi-res colour) must not change the mode.
+                SCLDVideo::cellBytes((uint8_t) (m | 0x38), d1, d2, c.row, c.col, data, second);
+                if (data != want[m][0] || second != want[m][1]) ok[m] = false;
+            }
+        }
+        const char* names[8] = {
+            "mode 0 (standard): DFILE1 bitmap + DFILE1 attributes",
+            "mode 1 (second screen): DFILE2 bitmap + DFILE2 attributes",
+            "mode 2 (extended colour): DFILE1 bitmap + 8x1 attributes from DFILE2",
+            "mode 3: DFILE2 bitmap + the same DFILE2 byte as attribute",
+            "mode 4 (hi-res): DFILE1 bitmap + DFILE1 attribute bytes",
+            "mode 5 (hi-res): DFILE2 bitmap + DFILE2 attribute bytes",
+            "mode 6 (true hi-res): DFILE1 bitmap + DFILE2 bitmap",
+            "mode 7 (hi-res doubled): DFILE2 bitmap twice",
+        };
+        for (int m = 0; m < 8; m++) check(ok[m], names[m]);
+    }
+
     printf("\n====================\n");
     if (failures == 0) {
         printf("ALL PASSED\n");
