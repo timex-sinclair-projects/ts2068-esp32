@@ -40,6 +40,9 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "SCLD.h"
 #include "SCLDPrinter.h"
 #include "VirtualDisk.h"
+#ifdef ESP2068_TSPICO
+#include "TSPico.h"
+#endif
 #include "Video.h"
 #include "AySound.h"
 #include "Tape.h"
@@ -314,6 +317,12 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
                 // don't hang) without persisting any printed image
                 // anywhere yet -- see SCLDPrinter.h's header comment.
                 return SCLDPrinter::read(CPU::global_tstates + CPU::tstates);
+#ifdef ESP2068_TSPICO
+            case 0x000E:
+            case 0x000F:
+                // The TS-Pico, mirrored locally; see include/TSPico.h.
+                return TSPico::in(address & 0xFF);
+#else
             case 0x000F:
                 // Phase 4 Piece A: virtual disk status byte -- see
                 // include/VirtualDisk.h and PLAN.md's "Phase 4" writeup.
@@ -322,6 +331,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
                 // Z80 registers/memory directly (host-testable, see its
                 // own header comment), so no register reads needed here.
                 return VirtualDisk::lastStatus();
+#endif
             // Other TS2068 ports (AY joystick input, etc.): not this
             // slice's scope.
             default: return 0xff;
@@ -581,6 +591,13 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
             // see the matching read case in Ports::input() and
             // SCLDPrinter.h for the protocol this implements.
             case 0x00FB: SCLDPrinter::write(data, CPU::global_tstates + CPU::tstates); return;
+#ifdef ESP2068_TSPICO
+            case 0x000E:
+            case 0x000F:
+                // The TS-Pico, mirrored locally; see include/TSPico.h.
+                TSPico::out(address & 0xFF, data);
+                return;
+#else
             case 0x000E: {
                 // Phase 4 Piece A: virtual disk command byte -- see
                 // include/VirtualDisk.h and PLAN.md's "Phase 4" writeup.
@@ -644,6 +661,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
                         return;
                 }
             }
+#endif
             case 0x00FE: {
                 // Border color / beeper / tape-MIC-out write. Same bit
                 // layout as the Spectrum ULA's port 0xFE write

@@ -32,6 +32,9 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 
 */
 
+#ifdef ESP2068_TSPICO
+#include "TSPico.h"
+#endif
 #include "cpuESP.h"
 #include "ESPectrum.h"
 #include "MemESP.h"
@@ -183,6 +186,9 @@ void CPU::reset() {
         Z80Ops::isPentagon = false;
         Z80Ops::is2a3 = false;
         Z80Ops::is2068 = true;
+#ifdef ESP2068_TSPICO
+        TSPico::machineReset();
+#endif
         statesInFrame = TSTATES_PER_FRAME_2068;
         IntStart = INT_START2068;
         IntEnd = INT_END2068 + CPU::latetiming;

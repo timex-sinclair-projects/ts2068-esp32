@@ -75,9 +75,9 @@ def open_port(port):
     return s
 
 
-def wait_for_boot(s, timeout=10.0):
+def wait_for_boot(s, settle, timeout=10.0):
     """Shows output until the emulator reports its boot time, then lets the
-    ROM reach the copyright screen."""
+    ROM reach the copyright screen (settle seconds)."""
     seen = b""
     end = time.time() + timeout
     while time.time() < end:
@@ -85,7 +85,7 @@ def wait_for_boot(s, timeout=10.0):
         if data:
             seen += data
             if b"Boot time" in seen:
-                drain(s, 1.5)
+                drain(s, settle)
                 return
     print("(no boot seen; typing anyway)", file=sys.stderr)
 
@@ -99,13 +99,13 @@ def drain(s, seconds):
             sys.stdout.flush()
 
 
-def send(s, text):
+def send(s, text, per_key=SECONDS_PER_KEY):
     for data, keys in encode(text):
         if data is None:
             drain(s, 1.0)
             continue
         s.write(data)
-        drain(s, keys * SECONDS_PER_KEY)
+        drain(s, keys * per_key)
         if data.endswith(b"\r"):
             # The ROM ignores keys while it stores a line or runs a
             # command, and holds only one pending key: give it time.
@@ -147,14 +147,17 @@ def main():
     ap.add_argument("keys", nargs="?", default="", help="keys to type")
     ap.add_argument("--listen", type=float, default=1.0, help="seconds to show serial output afterwards")
     ap.add_argument("--interactive", action="store_true", help="type live from this terminal")
+    ap.add_argument("--boot-wait", type=float, default=1.5,
+                    help="seconds after boot before typing (the TS-Pico ROM needs longer)")
+    ap.add_argument("--key-time", type=float, default=SECONDS_PER_KEY, help="seconds per key")
     args = ap.parse_args()
 
     s = open_port(args.port)
-    wait_for_boot(s)
+    wait_for_boot(s, args.boot_wait)
     if args.interactive:
         interactive(s)
     else:
-        send(s, args.keys)
+        send(s, args.keys, args.key_time)
         drain(s, args.listen)
 
 

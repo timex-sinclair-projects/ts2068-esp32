@@ -45,6 +45,10 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "SCLD.h"
 #include "RomLoader.h"
 #include "DockLoader.h"
+#ifdef ESP2068_TSPICO
+#include "TSPico.h"
+#include <vector>
+#endif
 #ifdef ESP2068_SERIAL_KEYS
 #include "SerialKeys.h"
 #endif
@@ -659,6 +663,9 @@ void ESPectrum::setup() {
 #ifdef ESP2068_SERIAL_KEYS
     SerialKeys::init();
 #endif
+#ifdef ESP2068_TSPICO
+    TSPico::init();
+#endif
 
     if (ps2mouse) {
         printf("Mouse detected\n");
@@ -738,10 +745,28 @@ void ESPectrum::setup() {
         // (Phase 3, PLAN.md) — see RomLoader.h. Missing files are not
         // fatal: HOME ROM stays zeroed placeholder memory (already the
         // case since allocateMemory()), same as if nothing were loaded.
-        if (!RomLoader::loadHomeRomFromFile(RomLoader::DEFAULT_HOME_ROM_PATH))
-            printf("TS2068: no HOME ROM at %s -- running with a blank ROM\n", RomLoader::DEFAULT_HOME_ROM_PATH);
-        if (!RomLoader::loadExromFromFile(RomLoader::DEFAULT_EXROM_PATH))
-            printf("TS2068: no EXROM at %s -- EXROM chunks will read as an empty socket\n", RomLoader::DEFAULT_EXROM_PATH);
+        bool romsLoaded = false;
+#ifdef ESP2068_TSPICO
+        // The TS-Pico ROM (TSPICO-23.ROM), if it's on the card: 32K, the
+        // HOME ROM then a 16K EXROM.
+        if (FILE* f = fopen("/sd/2068/tspico.rom", "rb")) {
+            std::vector<uint8_t> rom(32768);
+            size_t n = fread(rom.data(), 1, rom.size() + 1, f);
+            fclose(f);
+            if (n == 32768 && RomLoader::loadHomeRomFromBuffer(rom.data(), 16384)
+                           && RomLoader::loadExromFromBuffer(rom.data() + 16384, 16384)) {
+                printf("TS2068: TS-Pico ROM loaded from /sd/2068/tspico.rom\n");
+                romsLoaded = true;
+            } else
+                printf("TS2068: /sd/2068/tspico.rom is not a 32K TS-Pico ROM -- using the stock ROMs\n");
+        }
+#endif
+        if (!romsLoaded) {
+            if (!RomLoader::loadHomeRomFromFile(RomLoader::DEFAULT_HOME_ROM_PATH))
+                printf("TS2068: no HOME ROM at %s -- running with a blank ROM\n", RomLoader::DEFAULT_HOME_ROM_PATH);
+            if (!RomLoader::loadExromFromFile(RomLoader::DEFAULT_EXROM_PATH))
+                printf("TS2068: no EXROM at %s -- EXROM chunks will read as an empty socket\n", RomLoader::DEFAULT_EXROM_PATH);
+        }
         // A cartridge in the dock, if there is one at the fixed path (no OSD
         // picker yet). The ROM's own start-up finds and enters it.
         const char* cartPath = "/sd/2068/cart.dck";
@@ -2111,6 +2136,9 @@ for(;;) {
     SerialKeys::cpuUs = esp_timer_get_time() - cpuStart;
 #else
     CPU::loop();
+#endif
+#ifdef ESP2068_TSPICO
+    TSPico::frame();
 #endif
 
     // Copy audio buffer vars for finish buffer code
