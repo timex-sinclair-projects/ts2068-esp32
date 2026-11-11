@@ -773,13 +773,13 @@ void ESPectrum::setup() {
 #endif
         if (!romsLoaded) {
             std::string homePath = romFile("home.rom"), exromPath = romFile("exrom.rom");
-            if (!RomLoader::loadHomeRomFromFile(homePath))
+            bool home = RomLoader::loadHomeRomFromFile(homePath);
+            if (!home)
                 printf("TS2068: no HOME ROM at %s -- running with a blank ROM\n", homePath.c_str());
-            else
-                // The native disk, if this is the stock HOME ROM (DosDisk.h).
-                DosDisk::install();
             if (!RomLoader::loadExromFromFile(exromPath))
                 printf("TS2068: no EXROM at %s -- EXROM chunks will read as an empty socket\n", exromPath.c_str());
+            // The native disk, if these are the stock ROMs (DosDisk.h).
+            if (home) DosDisk::install();
         }
         // A cartridge in the dock, if there is one at the fixed path (no OSD
         // picker yet). The ROM's own start-up finds and enters it.

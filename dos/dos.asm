@@ -1,14 +1,17 @@
-; ESP2068 -- native disk for the TS2068: the DOS ROM.
+; ESP2068 -- native disk for the TS2068: the ROM side.
 ;
-; Assembled twice by tools/build_dos.py:
+; Assembled three times by tools/build_dos.py, with -DSIDE=n:
 ;
-;   -DSIDE_HOME=0  the DOS ROM, 16K. The emulator overlays it on Z80
-;                  0000h-3FFFh (chunks 0 and 1) while the module runs, in
-;                  place of HOME; the 2068's own bank registers (ports F4h,
-;                  FFh) are never touched, so a cartridge or the EXROM is
-;                  exactly as it was afterwards.
-;   -DSIDE_HOME=1  the HOME ROM's side of the switch: the bytes that go in
-;                  HOME's free 3CDCh-3CFFh pocket (genuine FFh filler).
+;   SIDE=0  the DOS ROM, 16K. The emulator overlays it on Z80 0000h-3FFFh
+;           (chunks 0 and 1) while the module runs, in place of HOME; the
+;           2068's own bank registers (ports F4h, FFh) are never touched,
+;           so a cartridge or the EXROM is exactly as it was afterwards.
+;   SIDE=1  HOME's side of the switch: the bytes that go in HOME's free
+;           3CDCh-3CFFh pocket (genuine FFh filler).
+;   SIDE=2  the EXROM's tape hooks, in its unused 1800h-1BFFh block (BLK2,
+;           FFh filler in every EXROM): PGPSTR's call in SLVM, R_TAPE,
+;           W_TAPE and SAVE. They make service calls directly; the EXROM
+;           stays paged in.
 ;
 ; The switch is two ports on the emulator, value ignored (A is preserved):
 ;
@@ -27,23 +30,36 @@
 ; the keyboard, "scroll?" and BREAK work as usual.
 ;
 ; Errors are never raised inside the module. It returns NZ with the RST 8
-; code in A, and HOME raises the report once the DOS ROM is gone. A report
-; raised by HOME code the module called (BREAK at "scroll?", say) unwinds
-; with HOME in place, which is also correct. There is no bank stack to leak.
+; code in A (REPORT resets the stack to the module's entry first), and
+; HOME raises the report once the DOS ROM is gone. A report raised by HOME
+; code the module called (BREAK at "scroll?", say) unwinds with HOME in
+; place, which is also correct. There is no bank stack to leak.
 ;
 ; The engine is the emulator itself: OUT (P_SVC),A with the function in A
 ; runs it synchronously and puts its answer in A.
 
         DEVICE  NOSLOT64K
 
-; --- The emulator's ports (include/DiskEngine.h) -------------------------------
+; --- The emulator's ports and services (include/DiskEngine.h) ------------------
 P_SVC           EQU $D1            ; OUT: A = function; A comes back with the answer
 P_DOS_ON        EQU $D3
 P_DOS_OFF       EQU $D5
 
-SVC_CAT_OPEN    EQU $01            ; BC = length, DE = text of a folder (BC = 0: the
-                                   ;   current one). A = 0, or a report code
+SVC_CAT_OPEN    EQU $01            ; HL = 0: the current folder; HL = 1: BC = length,
+                                   ;   DE = text ("" the mounted TAP, x.tap, a folder)
 SVC_CAT_CHAR    EQU $02            ; A = the listing's next character, 0 at the end
+SVC_TAPE_NAME   EQU $03            ; DE/BC the name SLVM popped; (TADDR) the command
+SVC_R_TAPE      EQU $04            ; (SP) = the caller's AF, IX, DE: R_TAPE's
+SVC_W_TAPE      EQU $05            ; (SP) = the caller's AF, IX, DE: W_TAPE's
+SVC_TAPE_MOUNTED EQU $06           ; A = 1 if a TAP is mounted
+SVC_CLOSE_ALL   EQU $07            ; CLOSE #*: unmount the TAP
+SVC_FORMAT      EQU $08            ; DE/BC: a new TAP, mounted
+
+; Answers of the tape services, below the report codes (all 3 or more).
+T_NOT_OURS      EQU 0              ; nothing mounted: the stock routine runs
+T_DONE          EQU 1              ; R_TAPE: loaded (carry); TAPE_NAME: a TAP was
+                                   ;   mounted, load from its start (the name goes)
+T_FAILED        EQU 2              ; R_TAPE: no carry, as a tape error
 
 ; --- RST 8 codes (the report is code + 1) --------------------------------------
 R_NONSENSE      EQU $0B            ; C Nonsense in BASIC
@@ -51,15 +67,34 @@ R_NONSENSE      EQU $0B            ; C Nonsense in BASIC
 ; --- The 2068 -------------------------------------------------------------------
 CH_ADD          EQU $5C5D          ; the next character of the BASIC line
 X_PTR           EQU $5C5F          ; where the syntax error marker goes
+FLAGS           EQU $5C3B          ; bit 7 set: run time
+STKEND          EQU $5C65          ; the calculator stack's end
+DOS_SP          EQU $5E00          ; the module's entry SP (5CCCh-5EE9h is free;
+                                   ;   TS-Pico uses 5DCDh-5DDBh)
 CR              EQU $0D
 TOK_CAT         EQU $CF
+TOK_FORMAT      EQU $D0
+TOK_CLOSE       EQU $D4
 
 H_PRINT_A       EQU $0010          ; HOME: RST 10h, print A on the current channel
 H_ERROR_3       EQU $0055          ; HOME: LD (IY+0),L / LD SP,(ERR_SP) / JP 1354h,
                                    ;   RST 8 after it has fetched the code
+H_CLOSE         EQU $139F          ; HOME: CLOSE #'s routine (class 06h stacked the n)
 H_CHAN_OPEN     EQU $1230          ; HOME: CHAN-OPEN, select stream A
 H_CHECK_END     EQU $1B44          ; HOME: CHECK-END: CALL SYNTAX-Z / RET NZ / POP BC /
                                    ;   POP BC / STMT-NEXT (1B4Ah)
+H_EXPT_1NUM     EQU $1BE5          ; HOME: class 06h, a numeric expression
+H_EXPT_STR      EQU $1BEF          ; HOME: class 0Ah, a string expression
+
+; The EXROM (SIDE=2).
+X_ERROR         EQU $0010          ; EXROM: XRST8 after it has fetched the code:
+                                   ;   LD (IY+0),L / LD SP,(ERRSP) / back to HOME
+X_CALL_BANK     EQU $0F99          ; EXROM: CALL BANK
+X_SLVM_RET      EQU $0218          ; SLVM after CALL BANK PGPSTR: POP IX ...
+X_R_TAPE_3      EQU $00FF          ; R_TAPE after INC D / EX AF,AF' / DEC D
+X_W_TAPE_3      EQU $006B          ; W_TAPE after LD HL,00E5h
+X_SAVE_3        EQU $0854          ; SAVE after PUSH HL / LD A,FDh
+HOOKS           EQU $1800          ; BLK2
 
 ;==============================================================================
 ; The switch, at the same addresses in both ROMs: HOME 3CDCh-3CFCh
@@ -68,26 +103,37 @@ H_CHECK_END     EQU $1B44          ; HOME: CHECK-END: CALL SYNTAX-Z / RET NZ / P
 POCKET          EQU $3CDC
 POCKET_END      EQU $3D00          ; CHRSET starts here
 
-        IF SIDE_HOME
+; The pocket's layout, fixed: both sides check against these.
+L_D_ENTER       EQU POCKET+3       ; 3CDFh  the DOS ROM: CALL DOS_MAIN
+L_H_DONE        EQU POCKET+8       ; 3CE4h  HOME: back from the module
+L_D_HOMECALL    EQU POCKET+22      ; 3CF2h  the DOS ROM: HOMECALL
+L_H_CALL        EQU POCKET+24      ; 3CF4h  HOME: HOMECALL's HOME half
+L_D_CALL_RET    EQU POCKET+31      ; 3CFBh  the DOS ROM: HOMECALL's RET
+
+        IF SIDE == 1
 
         ORG     POCKET
-; H_CAT -- CAT's stub at 25C8h jumps here (stock: LD B,CFh / JR 25D6h).
-H_CAT:  ld      b,TOK_CAT
-; H_ENTER -- B = the keyword. Both the syntax pass and the run.
+; H_ENTER -- the disk keywords' stub at 25D6h jumps here, B = the keyword
+; (25C8h-25D4h: LD B,token / JR 25D6h; CLOSE #'s at 25D9h). Both the
+; syntax pass and the run.
 H_ENTER:
         di
         out     (P_DOS_ON),a
         ASSERT  $ == L_D_ENTER
         ds      5,$FF              ; the DOS ROM's CALL DOS_MAIN / OUT (P_DOS_OFF),A
         ASSERT  $ == L_H_DONE
-; H_DONE -- back from the module: Z done, NZ with the report code in A.
-; Done goes through CHECK-END: at run time it returns, and so do we, to
-; the statement loop; on the syntax pass it drops our return address (the
-; statement loop's) and goes on to the next statement. A plain RET there
-; would run the statement loop's run-time code, which jumps to the line in
-; NEWPPC and syntax-checks a program line in place, inserting its hidden
-; numbers a second time.
+; H_DONE -- back from the module:
+;   C        go on to the HOME routine at HL (CLOSE #n: the stock CLOSE #)
+;   NC, Z    done, through CHECK-END: at run time it returns, and so do we,
+;            to the statement loop; on the syntax pass it drops our return
+;            address (the statement loop's) and goes on to the next
+;            statement. A plain RET there would run the statement loop's
+;            run-time code, which jumps to the line in NEWPPC and
+;            syntax-checks a program line in place, inserting its hidden
+;            numbers a second time.
+;   NC, NZ   the report whose code is in A
 H_DONE: ei
+        jp      c,H_JP_HL
         jr      nz,.report
         call    H_CHECK_END
         ret
@@ -104,7 +150,6 @@ H_CALL: ei
         out     (P_DOS_ON),a
         ASSERT  $ == L_D_CALL_RET
         ds      1,$FF              ; the DOS ROM's RET
-        ds      1,$FF
 H_JP_HL:
         jp      (hl)
         ASSERT  $ <= POCKET_END
@@ -112,7 +157,115 @@ H_JP_HL:
         ; HOME's side of the pocket only (build_dos.py patches these bytes).
         SAVEBIN "out/home_pocket.bin",POCKET,$-POCKET
 
-        ELSE
+        ENDIF
+
+;==============================================================================
+; The EXROM's tape hooks (SIDE=2)
+;==============================================================================
+
+        IF SIDE == 2
+
+        ORG     HOOKS
+
+; X_PGPSTR -- SLVM's CALL BANK PGPSTR at 0215h calls here instead. The name
+; goes to the engine, which may mount a TAP (LOAD "game.tap": the name then
+; goes, so the LOAD takes the TAP's first program) or refuse the command.
+X_PGPSTR:
+        inc     sp
+        inc     sp                 ; drop the return to 0218h: CALL BANK reads the
+                                   ;   frame SLVM pushed above it
+        call    X_CALL_BANK        ; PGPSTR: DE = the text, BC = its length
+        push    af
+        ld      a,SVC_TAPE_NAME
+        out     (P_SVC),a
+        cp      T_DONE
+        jr      z,.noname
+        and     a
+        jr      nz,X_REPORT
+        jr      .go
+.noname:
+        ld      bc,0               ; LOAD "": the first program on the TAP
+.go:    pop     af
+        jp      X_SLVM_RET
+
+; X_REPORT -- raise the report whose code is in A, from the EXROM.
+X_REPORT:
+        ld      l,a
+        push    hl
+        ld      hl,(CH_ADD)
+        ld      (X_PTR),hl
+        pop     hl
+        jp      X_ERROR
+
+; X_R_TAPE -- R_TAPE (00FCh) jumps here. A = the flag wanted (00h a header,
+; FFh data), carry set to LOAD (clear to VERIFY), IX = where, DE = how many.
+X_R_TAPE:
+        push    af
+        ld      a,SVC_R_TAPE
+        out     (P_SVC),a
+        and     a
+        jr      z,.stock
+        inc     sp
+        inc     sp                 ; drop the AF
+        cp      3
+        jr      nc,X_REPORT        ; not on the TAP: F
+        rra                        ; T_DONE: carry; T_FAILED: none
+        ret
+.stock: pop     af
+        inc     d                  ; R_TAPE's first three bytes
+        ex      af,af'
+        dec     d
+        jp      X_R_TAPE_3
+
+; X_W_TAPE -- W_TAPE (0068h) jumps here. A = the flag, IX = from, DE = how many.
+X_W_TAPE:
+        push    af
+        ld      a,SVC_W_TAPE
+        out     (P_SVC),a
+        and     a
+        jr      z,.stock
+        inc     sp
+        inc     sp
+        cp      3
+        jr      nc,X_REPORT
+        ret
+.stock: pop     af
+        ld      hl,$00E5           ; W_TAPE's first instruction
+        jp      X_W_TAPE_3
+
+; X_SAVE -- SAVE (0851h) jumps here. HL = the data, IX = the header. With a
+; TAP mounted: no "Start tape, then press any key", no second's pause, the
+; header and the data straight onto the TAP.
+X_SAVE: ld      a,SVC_TAPE_MOUNTED
+        out     (P_SVC),a
+        and     a
+        jr      nz,.tap
+        push    hl                 ; SAVE's first two instructions
+        ld      a,$FD
+        jp      X_SAVE_3
+.tap:   push    hl
+        push    ix
+        ld      de,17
+        xor     a
+        call    X_W_TAPE
+        pop     ix
+        ld      e,(ix+$0B)
+        ld      d,(ix+$0C)         ; the data's length, from the header
+        ld      a,$FF
+        pop     ix
+        jp      X_W_TAPE
+
+        ASSERT  $ <= $1C00
+
+        SAVEBIN "out/exrom_hooks.bin",HOOKS,$-HOOKS
+
+        ENDIF
+
+;==============================================================================
+; The DOS ROM (SIDE=0)
+;==============================================================================
+
+        IF SIDE == 0
 
         ORG     0
         BLOCK   $4000,$FF          ; unused DOS ROM is FFh, like an empty ROM
@@ -121,95 +274,181 @@ H_JP_HL:
         ret                        ; never reached (the module runs under DI)
 
         ORG     POCKET
-        ds      5,$FF              ; HOME's H_CAT / H_ENTER
+        ds      3,$FF              ; HOME's H_ENTER
         ASSERT  $ == L_D_ENTER
 D_ENTER:
         call    DOS_MAIN
-        out     (P_DOS_OFF),a      ; flags survive the OUT
+        out     (P_DOS_OFF),a      ; flags and HL survive the OUT
         ASSERT  $ == L_H_DONE
-        ds      11,$FF             ; HOME's H_DONE
+        ds      14,$FF             ; HOME's H_DONE
         ASSERT  $ == L_D_HOMECALL
 ; HOMECALL -- call the HOME routine at HL. A, F, BC, DE, IX go in; what it
 ; returns comes back. Interrupts are on while it runs.
 HOMECALL:
-D_HOMECALL:
         out     (P_DOS_OFF),a
         ASSERT  $ == L_H_CALL
         ds      7,$FF              ; HOME's H_CALL
         ASSERT  $ == L_D_CALL_RET
-D_CALL_RET:
         ret
 
-        ENDIF
-
-; The pocket's layout, fixed: both sides check against these.
-L_D_ENTER       EQU POCKET+5       ; 3CE1h  the DOS ROM: CALL DOS_MAIN
-L_H_DONE        EQU POCKET+10      ; 3CE6h  HOME: back from the module
-L_D_HOMECALL    EQU POCKET+21      ; 3CF1h  the DOS ROM: HOMECALL
-L_H_CALL        EQU POCKET+23      ; 3CF3h  HOME: HOMECALL's HOME half
-L_D_CALL_RET    EQU POCKET+30      ; 3CFAh  the DOS ROM: HOMECALL's RET
-
-        IF SIDE_HOME == 0
-
-;==============================================================================
+;------------------------------------------------------------------------------
 ; The module
-;==============================================================================
+;------------------------------------------------------------------------------
 
         ORG     $0100
 
-; DOS_MAIN -- B = the keyword. Returns Z when done, or NZ with A = the RST 8
-; code of the report HOME is to raise.
+; DOS_MAIN -- B = the keyword. Returns NC Z when done, NC NZ with A = the RST
+; 8 code of the report HOME is to raise, or C with HL = a HOME routine to go
+; on to.
 DOS_MAIN:
+        ld      (DOS_SP),sp
         ld      a,b
         cp      TOK_CAT
         jr      z,CAT
+        cp      TOK_FORMAT
+        jr      z,FORMAT
+        cp      TOK_CLOSE
+        jr      z,CLOSE
 NONSENSE:
         ld      a,R_NONSENSE
-; REPORT -- A = a report code: NZ, and X_PTR set the way RST 8 sets it.
-REPORT: ld      hl,(CH_ADD)
+; REPORT -- A = a report code: back to DOS_MAIN's caller from any depth,
+; NC NZ, with X_PTR set the way RST 8 sets it.
+REPORT: ld      sp,(DOS_SP)
+        ld      hl,(CH_ADD)
         ld      (X_PTR),hl
         or      a
         ret
 
 ;------------------------------------------------------------------------------
-; CAT -- the current folder. (CAT "x" comes in a later phase.)
+; CAT          the current folder
+; CAT "dir"    another folder
+; CAT "x.tap"  the blocks in a TAP
+; CAT ""       the mounted TAP's blocks, > at the pointer
 ;------------------------------------------------------------------------------
 CAT:    call    AT_END
-        jr      nz,NONSENSE
-        bit     7,(iy+1)
+        ld      hl,0
+        jr      nz,.arg
+        call    RUNTIME
         ret     z                  ; the syntax pass: accepted
+        jr      .open
+.arg:   call    EXPT_STR_END
+        ret     z
+        call    POP_STR
+        ld      hl,1
+.open:  push    hl
+        push    de
+        push    bc
         ld      a,2
         ld      hl,H_CHAN_OPEN
         call    HOMECALL           ; the upper screen
-        ld      bc,0               ; the current folder
+        pop     bc
+        pop     de
+        pop     hl
         ld      a,SVC_CAT_OPEN
         out     (P_SVC),a
         and     a
-        jr      nz,REPORT
+        jp      nz,REPORT
 .next:  ld      a,SVC_CAT_CHAR
         out     (P_SVC),a
         and     a
-        ret     z                  ; the end of the listing
+        ret     z                  ; the end of the listing: NC Z
         ld      hl,H_PRINT_A
         call    HOMECALL
         jr      .next
 
 ;------------------------------------------------------------------------------
+; FORMAT "x.tap" / FORMAT "x"   a new, empty TAP, mounted
+;------------------------------------------------------------------------------
+FORMAT: call    AT_END
+        jr      z,NONSENSE         ; the name is required
+        call    EXPT_STR_END
+        ret     z
+        call    POP_STR
+        ld      a,SVC_FORMAT
+        out     (P_SVC),a
+        and     a
+        jp      nz,REPORT
+        ret
+
+;------------------------------------------------------------------------------
+; CLOSE #*    unmount the TAP (and, later, close every file)
+; CLOSE #n    the stock CLOSE #: class 06h here, then 139Fh at run time
+;------------------------------------------------------------------------------
+CLOSE:  call    SKIP_SPACES
+        cp      '*'
+        jr      nz,.stream
+        ld      hl,(CH_ADD)
+        inc     hl
+        ld      (CH_ADD),hl
+        call    AT_END
+        jp      nz,NONSENSE
+        call    RUNTIME
+        ret     z
+        ld      a,SVC_CLOSE_ALL
+        out     (P_SVC),a
+        and     a
+        jp      nz,REPORT
+        ret
+.stream:
+        ld      hl,H_EXPT_1NUM
+        call    HOMECALL
+        call    AT_END
+        jp      nz,NONSENSE
+        call    RUNTIME
+        ret     z
+        ld      hl,H_CLOSE
+        scf
+        ret
+
+;------------------------------------------------------------------------------
 ; Parsing
 ;------------------------------------------------------------------------------
 
-; AT_END -- Z if the statement ends here (':' or the end of the line), with
-; CH_ADD stepped over any spaces. A = the character.
-AT_END: ld      hl,(CH_ADD)
+; SKIP_SPACES -- A = the character at CH_ADD, CH_ADD stepped over spaces.
+SKIP_SPACES:
+        ld      hl,(CH_ADD)
 .skip:  ld      a,(hl)
         cp      ' '
         jr      nz,.done
         inc     hl
         jr      .skip
 .done:  ld      (CH_ADD),hl
+        ret
+
+; AT_END -- Z if the statement ends here (':' or the end of the line).
+AT_END: call    SKIP_SPACES
         cp      CR
         ret     z
         cp      ':'
+        ret
+
+; EXPT_STR_END -- a string expression that ends the statement. Z on the
+; syntax pass (nothing more to do), NZ at run time (the string stacked).
+EXPT_STR_END:
+        ld      hl,H_EXPT_STR
+        call    HOMECALL
+        call    AT_END
+        jp      nz,NONSENSE
+        ; fall through
+; RUNTIME -- NZ at run time, Z on the syntax pass; NC.
+RUNTIME:
+        ld      a,(FLAGS)
+        and     $80
+        ret
+
+; POP_STR -- pop a string off the calculator stack: DE = text, BC = length.
+POP_STR:
+        ld      hl,(STKEND)
+        dec     hl
+        ld      b,(hl)
+        dec     hl
+        ld      c,(hl)
+        dec     hl
+        ld      d,(hl)
+        dec     hl
+        ld      e,(hl)
+        dec     hl
+        ld      (STKEND),hl
         ret
 
         ASSERT  $ <= POCKET

@@ -2,10 +2,10 @@
 
 ESP2068 — TS2068 port of ESPectrum
 
-test/host/diskengine_test.cpp — host test for the native disk, Phase 1:
-DiskEngine's CAT listing and service calls (with a fake CPU and a scratch
-folder), DosDisk's HOME patches against the stock ROM, and SCLD's DOS ROM
-overlay.
+test/host/diskengine_test.cpp — host test for the native disk, Phases 1
+and 2: DiskEngine's CAT listings, TAP mounting and tape services (with a
+fake CPU and a scratch folder), DosDisk's HOME and EXROM patches against
+both stock ROM pairs, and SCLD's DOS ROM overlay.
 
 Build and run (from repo root, after tools/build_dos.py):
 
@@ -54,14 +54,63 @@ static void writeFile(const std::string& path, size_t size) {
 // A CPU with registers to set and 64K of flat memory.
 class FakeCpu : public DiskCpu {
 public:
-    uint16_t BC = 0, DE = 0, HL = 0;
+    uint16_t BC = 0, DE = 0, HL = 0, IX = 0, SP = 0xFF00;
     uint8_t mem[65536] = {};
     uint16_t bc() override { return BC; }
     uint16_t de() override { return DE; }
     uint16_t hl() override { return HL; }
+    uint16_t ix() override { return IX; }
+    uint16_t sp() override { return SP; }
+    // A string at 8000h for DE/BC.
+    void str(const std::string& t) {
+        DE = 0x8000;
+        BC = (uint16_t) t.size();
+        for (size_t i = 0; i < t.size(); i++) mem[0x8000 + i] = (uint8_t) t[i];
+    }
+    // R_TAPE's/W_TAPE's pushed AF.
+    void pushedAF(uint8_t a, bool carry) { mem[SP] = carry ? 1 : 0; mem[SP + 1] = a; }
     uint8_t peek(uint16_t a) override { return mem[a]; }
     void poke(uint16_t a, uint8_t v) override { mem[a] = v; }
 };
+
+static std::string drain(DiskEngine& eng, DiskCpu& cpu) {
+    std::string got;
+    for (int i = 0; i < 100000; i++) {
+        uint8_t c = eng.service(DiskEngine::SVC_CAT_CHAR, cpu);
+        if (c == 0) break;
+        got += (char) c;
+    }
+    return got;
+}
+
+// A TAP block: length, flag, data, checksum.
+static std::string tapBlock(uint8_t flag, const std::string& data) {
+    std::string b;
+    uint16_t len = (uint16_t) data.size() + 2;
+    b += (char) (len & 0xFF);
+    b += (char) (len >> 8);
+    b += (char) flag;
+    uint8_t x = flag;
+    for (char c : data) { b += c; x ^= (uint8_t) c; }
+    b += (char) x;
+    return b;
+}
+
+static std::string tapHeader(uint8_t type, const std::string& name, uint16_t len, uint16_t p1, uint16_t p2) {
+    std::string h;
+    h += (char) type;
+    std::string n = name;
+    n.resize(10, ' ');
+    h += n;
+    for (uint16_t v : {len, p1, p2}) { h += (char) (v & 0xFF); h += (char) (v >> 8); }
+    return tapBlock(0x00, h);
+}
+
+static void writeBytes(const std::string& path, const std::string& bytes) {
+    FILE* f = fopen(path.c_str(), "wb");
+    fwrite(bytes.data(), 1, bytes.size(), f);
+    fclose(f);
+}
 
 static std::vector<std::string> lines(const std::string& text) {
     std::vector<std::string> out;
@@ -112,6 +161,7 @@ int main() {
     printf("\nService calls\n");
     FakeCpu cpu;
     cpu.BC = 0;
+    cpu.HL = 0;
     check(eng.service(DiskEngine::SVC_CAT_OPEN, cpu) == DiskEngine::OK, "CAT_OPEN, the current folder: OK");
     std::string got;
     for (int i = 0; i < 10000; i++) {
@@ -121,8 +171,17 @@ int main() {
     }
     check(got == text, "CAT_CHAR hands out the listing, then 0");
     check(eng.service(DiskEngine::SVC_CAT_CHAR, cpu) == 0, "and stays at 0");
-    cpu.BC = 3;
-    check(eng.service(DiskEngine::SVC_CAT_OPEN, cpu) == DiskEngine::R_NAME, "CAT_OPEN with a folder: F for now");
+    cpu.HL = 1;
+    cpu.str("games");
+    check(eng.service(DiskEngine::SVC_CAT_OPEN, cpu) == DiskEngine::OK, "CAT \"games\": OK");
+    check(drain(eng, cpu).rfind("/games/\r", 0) == 0, "and lists /games/");
+    cpu.str("nothere");
+    check(eng.service(DiskEngine::SVC_CAT_OPEN, cpu) == DiskEngine::R_NAME, "CAT \"nothere\": F");
+    cpu.str("..");
+    check(eng.service(DiskEngine::SVC_CAT_OPEN, cpu) == DiskEngine::R_NAME, "CAT \"..\" from /: F (nothing above the root)");
+    cpu.str("");
+    check(eng.service(DiskEngine::SVC_CAT_OPEN, cpu) == DiskEngine::R_IO, "CAT \"\" with nothing mounted: J");
+    cpu.HL = 0;
     check(eng.service(0x7F, cpu) == DiskEngine::R_UNKNOWN_FN, "an unknown function: a report");
 
     // A folder with more than MAX_ENTRIES files.
@@ -138,45 +197,236 @@ int main() {
     cpu.BC = 0;
     check(nowhere.service(DiskEngine::SVC_CAT_OPEN, cpu) == DiskEngine::R_IO, "no card (no root): J");
 
-    printf("\nHOME patches\n");
-    std::vector<uint8_t> stock = readFile("patches/base/2068Home.BIN");
+
+    printf("\nTAP mounting\n");
+    {
+        // loader (Prog), then pic (Code, 4 bytes), then a headerless block.
+        std::string prog("\x00\x0a\x02\x00\xf9\x0d", 6);   // 10 RANDOMIZE
+        std::string tap = tapHeader(0, "loader", (uint16_t) prog.size(), 10, (uint16_t) prog.size())
+                        + tapBlock(0xFF, prog)
+                        + tapHeader(3, "pic", 4, 0x9000, 0x8000)
+                        + tapBlock(0xFF, "ABCD")
+                        + tapBlock(0xFF, "xyz");
+        writeBytes(root + "/games/game.tap", tap);
+        writeBytes(root + "/games/cut.tap", tap + std::string("\x09\x00\xff\x01", 4));   // last block cut short
+
+        DiskEngine e(root);
+        FakeCpu c;
+        c.mem[0x5C3B] = 0x80;                 // FLAGS: run time
+        c.mem[0x5C74] = 1;                    // T_ADDR: LOAD
+
+        c.str("games/game.tap");
+        c.mem[0x5C3B] = 0x00;
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NOT_OURS && e.mounted().empty(),
+              "TAPE_NAME on the syntax pass: nothing happens");
+        c.mem[0x5C3B] = 0x80;
+        c.str("missing.tap");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NOT_OURS && e.mounted().empty(),
+              "LOAD \"missing.tap\": not a file, the stock tape (nothing mounted)");
+        c.pushedAF(0x00, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_NOT_OURS, "R_TAPE, nothing mounted: the stock routine");
+        check(e.service(DiskEngine::SVC_W_TAPE, c) == DiskEngine::T_NOT_OURS, "W_TAPE, nothing mounted: the stock routine");
+        check(e.service(DiskEngine::SVC_TAPE_MOUNTED, c) == 0, "TAPE_MOUNTED: 0");
+
+        c.str("games/game.tap");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_DONE, "LOAD \"games/game.tap\": mounted, T_DONE");
+        check(e.mounted() == "/games/game.tap" && e.tapBlocks() == 5 && e.tapPointer() == 0, "5 blocks, the pointer at the start");
+        check(e.service(DiskEngine::SVC_TAPE_MOUNTED, c) == 1, "TAPE_MOUNTED: 1");
+
+        // LOAD "": the header, then the program.
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_DONE, "R_TAPE a header: done");
+        check(c.mem[0x6000] == 0 && memcmp(c.mem + 0x6001, "loader    ", 10) == 0 && c.mem[0x600D] == 10, "the header is loader's, LINE 10");
+        c.IX = 0x7000; c.DE = (uint16_t) prog.size(); c.pushedAF(0xFF, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_DONE, "R_TAPE the data: done");
+        check(memcmp(c.mem + 0x7000, prog.data(), prog.size()) == 0, "the program is in memory");
+        check(e.tapPointer() == 2, "the pointer at block 3");
+
+        // LOAD "" CODE: the next header, then its 4 bytes.
+        c.str("");
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_DONE && c.mem[0x6000] == 3, "the next header: Code");
+        c.IX = 0x9000; c.DE = 4; c.pushedAF(0xFF, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_DONE && memcmp(c.mem + 0x9000, "ABCD", 4) == 0, "CODE loaded");
+        // VERIFY: the same bytes pass, different ones fail.
+        e.mount("/games/game.tap");
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, false);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_FAILED, "VERIFY a header against other bytes: failed");
+        c.IX = 0x7000; c.DE = (uint16_t) prog.size(); c.pushedAF(0xFF, false);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_DONE, "VERIFY the program: done");
+        // A length that differs: a loading error.
+        c.IX = 0x9000; c.DE = 5; c.pushedAF(0xFF, true);
+        e.mount("/games/game.tap");
+        c.pushedAF(0xFF, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_FAILED, "data of another length: failed");
+
+        // A name the TAP hasn't got: headers examined once round, then F.
+        e.mount("/games/game.tap");
+        c.str("nope");
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        int headers = 0;
+        uint8_t r = 0;
+        for (int i = 0; i < 20; i++) {
+            c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+            r = e.service(DiskEngine::SVC_R_TAPE, c);
+            if (r != DiskEngine::T_DONE) break;
+            headers++;
+        }
+        check(headers == 2 && r == DiskEngine::R_NAME, "both headers, then F");
+        // Wrap: with the pointer at block 5, LOAD "" goes round the end to
+        // block 1's header.
+        e.mount("/games/game.tap");
+        c.str("");
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        e.service(DiskEngine::SVC_R_TAPE, c);
+        c.IX = 0x7000; c.DE = (uint16_t) prog.size(); c.pushedAF(0xFF, true);
+        e.service(DiskEngine::SVC_R_TAPE, c);
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        e.service(DiskEngine::SVC_R_TAPE, c);
+        c.IX = 0x9000; c.DE = 4; c.pushedAF(0xFF, true);
+        e.service(DiskEngine::SVC_R_TAPE, c);
+        check(e.tapPointer() == 4, "the pointer at block 5");
+        e.service(DiskEngine::SVC_TAPE_NAME, c);
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        c.mem[0x6000] = 0xEE;
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::T_DONE && c.mem[0x6000] == 0 && e.tapPointer() == 1,
+              "round the end to block 1's header");
+
+        // SAVE appends: a header and the data.
+        std::string before = std::string((char*) readFile((root + "/games/game.tap").c_str()).data(), tap.size());
+        memcpy(c.mem + 0x6100, "\x03savedpic  \x03\x00\x00\x90\x00\x80", 17);
+        c.IX = 0x6100; c.DE = 17; c.pushedAF(0x00, false);
+        check(e.service(DiskEngine::SVC_W_TAPE, c) == DiskEngine::T_DONE, "W_TAPE the header: done");
+        memcpy(c.mem + 0x9100, "xyz", 3);
+        c.IX = 0x9100; c.DE = 3; c.pushedAF(0xFF, false);
+        check(e.service(DiskEngine::SVC_W_TAPE, c) == DiskEngine::T_DONE, "W_TAPE the data: done");
+        std::vector<uint8_t> after = readFile((root + "/games/game.tap").c_str());
+        std::string want = tap + tapBlock(0x00, std::string("\x03savedpic  \x03\x00\x00\x90\x00\x80", 17)) + tapBlock(0xFF, "xyz");
+        check(after.size() == want.size() && memcmp(after.data(), want.data(), want.size()) == 0, "the TAP has both blocks appended");
+        check(e.tapBlocks() == 7, "7 blocks now");
+        DiskEngine fresh(root);
+        check(fresh.mount("/games/game.tap") == DiskEngine::OK && fresh.tapBlocks() == 7, "and a fresh mount finds 7");
+
+        // Listings.
+        c.HL = 1; c.str("");
+        e.mount("/games/game.tap");
+        check(e.service(DiskEngine::SVC_CAT_OPEN, c) == DiskEngine::OK, "CAT \"\": the mounted TAP");
+        std::vector<std::string> T = lines(drain(e, c));
+        for (auto& l : T) printf("        |%s|\n", l.c_str());
+        check(T.size() == 9 && T[0] == "/games/game.tap", "header, 7 blocks, summary");
+        check(T.size() > 1 && T[1] == ">  1 Prog  loader          6", "block 1: the pointer, Prog, the name, the length");
+        check(T.size() > 3 && T[3] == "   3 Code  pic             4", "block 3: Code");
+        check(T.size() > 5 && T[5] == "   5 Data                  3", "a headerless block: Data");
+        check(T.size() > 8 && T[8] == "7 blocks, mounted", "the summary");
+        bool fit31 = true;
+        for (auto& l : T) if (l.size() > 31) fit31 = false;
+        check(fit31, "every line fits in 31 columns");
+        c.str("games/cut.tap");
+        check(e.service(DiskEngine::SVC_CAT_OPEN, c) == DiskEngine::OK, "CAT \"games/cut.tap\": OK, not mounted");
+        std::string cut = drain(e, c);
+        check(cut.find("5 blocks\r") != std::string::npos && cut.find('>') == std::string::npos, "the cut block is left out, no pointer");
+        check(e.mounted() == "/games/game.tap", "and game.tap is still the one mounted");
+        c.HL = 0;
+        e.service(DiskEngine::SVC_CAT_OPEN, c);
+        // Bare CAT in /games/ isn't possible yet (no CD); list /games/ by name.
+        c.HL = 1; c.str("/games");
+        e.service(DiskEngine::SVC_CAT_OPEN, c);
+        std::string g = drain(e, c);
+        check(g.find("  2>game.tap") != std::string::npos, "a folder listing marks the mounted TAP");
+
+        // CLOSE #* unmounts; a reset too.
+        check(e.service(DiskEngine::SVC_CLOSE_ALL, c) == DiskEngine::OK && e.mounted().empty(), "CLOSE_ALL unmounts");
+        e.mount("/games/game.tap");
+        e.reset();
+        check(e.mounted().empty(), "a reset unmounts");
+
+        // Mounting another TAP replaces the first.
+        writeBytes(root + "/other.tap", tapBlock(0xFF, "q"));
+        e.mount("/games/game.tap");
+        c.str("other.tap");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_DONE && e.mounted() == "/other.tap", "LOAD \"other.tap\": it replaces game.tap");
+        // SAVE "x.tap" is a block name: nothing mounts.
+        c.mem[0x5C74] = 0;
+        c.str("games/game.tap");
+        check(e.service(DiskEngine::SVC_TAPE_NAME, c) == DiskEngine::T_NOT_OURS && e.mounted() == "/other.tap", "SAVE \"games/game.tap\": a block name");
+
+        // FORMAT.
+        c.str("new");
+        check(e.service(DiskEngine::SVC_FORMAT, c) == DiskEngine::OK && e.mounted() == "/new.tap", "FORMAT \"new\": /new.tap, mounted");
+        check(readFile((root + "/new.tap").c_str()).empty() && e.tapBlocks() == 0, "empty");
+        c.str("new.tap");
+        check(e.service(DiskEngine::SVC_FORMAT, c) == DiskEngine::R_NAME, "FORMAT over an existing file: F");
+        c.str("");
+        check(e.service(DiskEngine::SVC_FORMAT, c) == DiskEngine::R_NAME, "FORMAT \"\": F");
+        c.str("nofolder/x.tap");
+        check(e.service(DiskEngine::SVC_FORMAT, c) == DiskEngine::R_IO, "FORMAT in a folder that isn't there: J");
+        c.IX = 0x6000; c.DE = 17; c.pushedAF(0x00, true);
+        check(e.service(DiskEngine::SVC_R_TAPE, c) == DiskEngine::R_NAME, "R_TAPE on an empty TAP: F");
+    }
+
+    printf("\nROM patches\n");
+    std::vector<uint8_t> stock = readFile("patches/base/TS2068_U16.BIN");
+    std::vector<uint8_t> stockX = readFile("patches/base/TS2068_U20.BIN");
     std::vector<uint8_t> want = readFile("dos/out/home-dos.rom");
-    check(stock.size() == 16384 && want.size() == 16384, "the stock HOME ROM and the built one are 16K");
-    if (stock.size() == 16384 && want.size() == 16384) {
+    std::vector<uint8_t> wantX = readFile("dos/out/exrom-dos.rom");
+    check(stock.size() == 16384 && want.size() == 16384 && stockX.size() == 8192 && wantX.size() == 8192,
+          "the genuine ROMs and the built ones are 16K and 8K");
+    if (stock.size() == 16384 && want.size() == 16384 && stockX.size() == 8192 && wantX.size() == 8192) {
         std::vector<uint8_t> home = stock;
-        check(DosDisk::patchHome(home.data()), "the stock HOME ROM takes the patches");
+        check(DosDisk::patchHome(home.data()), "the genuine HOME ROM takes the patches");
         check(home == want, "the result is build_dos.py's home-dos.rom");
         std::vector<uint8_t> again = home;
         check(!DosDisk::patchHome(again.data()) && again == home, "a patched ROM is refused, untouched");
         std::vector<uint8_t> other = stock;
-        other[0x25C9] = 0x00;
+        other[0x25D7] = 0x00;
         std::vector<uint8_t> otherCopy = other;
         check(!DosDisk::patchHome(other.data()) && other == otherCopy, "a ROM that differs at a site is refused, untouched");
 
+        std::vector<uint8_t> exrom = stockX;
+        check(DosDisk::patchExrom(exrom.data()), "the genuine EXROM takes the patches");
+        check(exrom == wantX, "the result is build_dos.py's exrom-dos.rom");
+        check(exrom[0x0068] == 0xC3 && exrom[0x00FC] == 0xC3 && exrom[0x0215] == 0xCD && exrom[0x0851] == 0xC3,
+              "W_TAPE, R_TAPE, SLVM's PGPSTR call and SAVE go to the hooks");
+        check((exrom[0x0069] | exrom[0x006A] << 8) >= 0x1800 && (exrom[0x006A] << 8) < 0x1C00, "in BLK2");
+
+        std::vector<uint8_t> home2 = readFile("patches/base/2068Home.BIN");
+        std::vector<uint8_t> exrom2 = readFile("patches/base/2068Exrom.BIN");
+        check(home2.size() == 16384 && DosDisk::patchHome(home2.data()), "the other stock HOME ROM takes them too");
+        check(exrom2.size() == 8192 && DosDisk::patchExrom(exrom2.data()), "and the other stock EXROM");
+
         // The switch: HOME's OUT (D3h),A is followed, at the next address,
-        // by the DOS ROM's CALL; the DOS ROM's OUT (D5h),A by HOME's code.
+        // by the DOS ROM's code; the DOS ROM's OUT (D5h),A by HOME's.
         const uint8_t* dos = DosRom::image;
-        check(home[0x25C8] == 0xC3 && home[0x25C9] == 0xDC && home[0x25CA] == 0x3C, "CAT's stub jumps to 3CDCh");
-        check(home[0x3CDF] == 0xD3 && home[0x3CE0] == DiskEngine::PORT_DOS_ON, "HOME 3CDFh: OUT (D3h),A");
-        check(dos[0x3CE1] == 0xCD, "DOS 3CE1h: CALL DOS_MAIN");
-        check(dos[0x3CE4] == 0xD3 && dos[0x3CE5] == DiskEngine::PORT_DOS_OFF, "DOS 3CE4h: OUT (D5h),A");
-        check(home[0x3CE6] == 0xFB && home[0x3CE7] == 0x20 && home[0x3CE9] == 0xCD && home[0x3CEA] == 0x44 && home[0x3CEB] == 0x1B, "HOME 3CE6h: EI / JR NZ / CALL CHECK-END");
-        check(dos[0x3CF1] == 0xD3 && dos[0x3CF2] == DiskEngine::PORT_DOS_OFF, "DOS 3CF1h: HOMECALL's OUT (D5h),A");
-        check(home[0x3CF3] == 0xFB && home[0x3CF8] == 0xD3 && home[0x3CF9] == DiskEngine::PORT_DOS_ON, "HOME 3CF3h: EI ... OUT (D3h),A");
-        check(dos[0x3CFA] == 0xC9, "DOS 3CFAh: RET");
+        check(home[0x25D6] == 0xC3 && home[0x25D7] == 0xDC && home[0x25D8] == 0x3C, "the keywords' stub jumps to 3CDCh");
+        check(home[0x25D9] == 0x06 && home[0x25DA] == 0xD4 && home[0x25DB] == 0x18 && home[0x25DC] == 0xF9,
+              "25D9h: LD B,D4h / JR 25D6h");
+        check(home[0x1A03] == 0x05 && home[0x1A04] == 0xD9 && home[0x1A05] == 0x25, "CLOSE #: class 05h, 25D9h");
+        check(home[0x1946] == 0xD2 && home[0x1947] == 0xC2, "CAT and FORMAT's syntax entries skip to class 05h");
+        check(home[0x3CDC] == 0xF3 && home[0x3CDD] == 0xD3 && home[0x3CDE] == DiskEngine::PORT_DOS_ON, "HOME 3CDCh: DI / OUT (D3h),A");
+        check(dos[0x3CDF] == 0xCD, "DOS 3CDFh: CALL DOS_MAIN");
+        check(dos[0x3CE2] == 0xD3 && dos[0x3CE3] == DiskEngine::PORT_DOS_OFF, "DOS 3CE2h: OUT (D5h),A");
+        check(home[0x3CE4] == 0xFB && home[0x3CE5] == 0xDA, "HOME 3CE4h: EI / JP C");
+        check(dos[0x3CF2] == 0xD3 && dos[0x3CF3] == DiskEngine::PORT_DOS_OFF, "DOS 3CF2h: HOMECALL's OUT (D5h),A");
+        check(home[0x3CF4] == 0xFB && home[0x3CF9] == 0xD3 && home[0x3CFA] == DiskEngine::PORT_DOS_ON, "HOME 3CF4h: EI ... OUT (D3h),A");
+        check(dos[0x3CFB] == 0xC9 && home[0x3CFC] == 0xE9, "DOS 3CFBh: RET; HOME 3CFCh: JP (HL)");
         check(memcmp(home.data() + 0x3D00, stock.data() + 0x3D00, 0x300) == 0, "CHRSET is untouched");
     }
 
     printf("\nSCLD overlay\n");
     SCLD::allocateMemory();
     if (stock.size() == 16384) SCLD::loadHomeRom(stock.data(), stock.size());
+    std::vector<uint8_t> exromImage = readFile("patches/base/TS2068_U20.BIN");
+    if (exromImage.size() == 8192) SCLD::loadExromImage(exromImage.data(), 1);
     SCLD::reset();
     uint8_t* home0 = SCLD::memChunk[0];
     SCLD::setOverlay(true);
     check(SCLD::memChunk[0] == home0 && !SCLD::overlayOn(), "without an image, the overlay stays off");
     check(DosDisk::install(), "install() takes the stock ROM in SCLD");
     check(DosDisk::active(), "the native disk is on");
-    check(SCLD::homePage(1)[0x05C8] == 0xC3, "SCLD's HOME ROM is patched (25C8h)");
+    check(DosDisk::tapeHooks() && exromImage[0x00FC] == 0xC3, "with the tape hooks in SCLD's EXROM");
+    check(SCLD::homePage(1)[0x05D6] == 0xC3, "SCLD's HOME ROM is patched (25D6h)");
     SCLD::OUT_F4(0x00);
     SCLD::setOverlay(true);
     check(SCLD::memChunk[0] == DosDisk::romImage() && SCLD::memChunk[1] == DosDisk::romImage() + 0x2000, "overlay on: chunks 0-1 are the DOS ROM");

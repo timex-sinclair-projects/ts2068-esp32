@@ -20,6 +20,13 @@ different kind of work from everything before it.
   fine. These files are the assembler's `INCBIN` source, not test
   fixtures — the patch `.asm` files splice new code around specific,
   hex-verified byte offsets in these exact files.
+- **`base/TS2068_U16.BIN` / `base/TS2068_U20.BIN`** — the HOME and
+  EXROM dumped from an unmodified TS2068 (the reference library's
+  `TS2068_ROMS_NoMod`), the same ROMs as on the board's card. They differ
+  from the pair above in a few hundred bytes, none at a patch site. The
+  native disk (`tools/build_dos.py`, `dos/dos.asm`) checks its HOME and
+  EXROM patches against both pairs and builds against this one; the `D:`
+  patches here don't use it.
 - **`2068_exrom_patch.asm`** — the three EXROM patch points (`W_TAPE`
   `$0068`, `R_TAPE` `$00FC`, the `PGPSTR`-call redirect `$0215`) plus
   `CAT`'s listing routine (called from the HOME ROM patch via

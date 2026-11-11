@@ -3,7 +3,7 @@
 ESP2068 -- TS2068 port of ESPectrum
 
 DosDisk.h -- the native disk's firmware glue: puts the DOS patches into
-the HOME ROM at boot, gives SCLD the DOS ROM to overlay, and turns
+the HOME and EXROM ROMs at boot, gives SCLD the DOS ROM to overlay, and turns
 service calls on port D1h into DiskEngine calls with the Z80's registers
 and memory. See include/DiskEngine.h for the design.
 
@@ -46,9 +46,16 @@ extern const char* const ROOT;
 // untouched, if any site differs.
 bool patchHome(uint8_t* home);
 
-// After the ROMs are loaded: patches SCLD's HOME ROM if it fits and turns
-// the native disk on. Returns whether it did.
+// The same for a 16K EXROM image: the tape hooks.
+bool patchExrom(uint8_t* exrom);
+
+// After both ROMs are loaded: patches SCLD's HOME ROM if it fits and turns
+// the native disk on, and patches the EXROM too if it fits (TAP mounting:
+// LOAD/SAVE go to a mounted TAP). Returns whether the native disk is on.
 bool install();
+
+// Whether the EXROM took the tape hooks.
+bool tapeHooks();
 
 bool active();
 
