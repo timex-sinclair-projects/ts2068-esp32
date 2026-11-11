@@ -225,7 +225,7 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
    - Or move the **Fuse-derived machine from ts2068-p4** (Fuse core, GPL-2+, beam-following, matched against Fuse) onto ESPectrum's chassis.
    - I'd start with ESP2068 because it's further along, and swap in the Fuse machine later only if accuracy needs it.
 5. **What about the mouse port?** Leave it for the mouse, or free GPIO26/27 (for example for a TS2068 joystick or a second UART)?
-6. **What happens to the RP2350pc work?** The Phase 0 bring-up in `bringup/` is built and untested. Keep it on the shelf in case you buy an RP2350pc later, or delete it.
+6. **What happens to the RP2350pc work?** Settled 2026-11-11: removed. The untested Phase 0 bring-up (`bringup/`, with `tools/make_font.py`) is kept in git history at commit `1f2a33d`.
 
 ## 6. Risks
 
@@ -239,4 +239,4 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 
 ## Appendix: draft 1 (RP2350pc)
 
-Draft 1 targeted the Olimex RP2350pc. On that board the TS-Pico v3 firmware could run on core 0 beside the emulator on core 1, the way the v3 card runs `tsbus`. A Phase 0 bring-up for it is in `bringup/`: HSTX DVI with a 524/525-line switch, PSRAM on GPIO8, PWM audio, SD over SPI1 and USB host. It builds with pico-sdk 2.2.0 and has not been tested on hardware.
+Draft 1 targeted the Olimex RP2350pc. On that board the TS-Pico v3 firmware could run on core 0 beside the emulator on core 1, the way the v3 card runs `tsbus`. A Phase 0 bring-up for it was written (since removed; see commit `1f2a33d`): HSTX DVI with a 524/525-line switch, PSRAM on GPIO8, PWM audio, SD over SPI1 and USB host. It built with pico-sdk 2.2.0 and was never tested on hardware.

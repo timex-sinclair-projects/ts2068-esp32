@@ -2,7 +2,24 @@
 
 A standalone Timex/Sinclair 2068 with TS-Pico functionality on the **Olimex ESP32-SBC-FabGL** (Rev B): VGA, PS/2 keyboard, microSD and audio on a single board.
 
-This repository holds the plan and design documents for the project, plus bring-up code and tools. The emulator itself is [ESP2068](https://github.com/factus10/ESP2068), a TS2068 port of ESPectrum. Work for this project happens on its branches.
+This repository holds the plan and design documents for the project. The emulator itself is [ESP2068](https://github.com/factus10/ESP2068), a TS2068 port of ESPectrum. Work for this project happens on its branches.
+
+## History
+
+This project is built on **[ESPectrum](https://github.com/EremusOne/ESPectrum)** by Víctor Iborra ("EremusOne"), a ZX Spectrum emulator for ESP32 boards that already runs on the ESP32-SBC-FabGL. ESPectrum has its own lineage:
+- It grew out of David Crespo's [ZX-ESPectrum-Wiimote](https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote).
+- That is a fork of [ZX-ESPectrum](https://github.com/rampa069/ZX-ESPectrum) by Ramón Martínez ("Rampa") and Jorge Fuertes ("Queru").
+- ZX-ESPectrum was inspired by Pete Todd's [PaseVGA](https://github.com/retrogubbins/paseVGA).
+
+ESPectrum also brings in:
+- a Z80 core derived from José Luis Sánchez's [z80cpp](https://github.com/jsanchezv/z80cpp)
+- the VGA driver from bitluni's [ESP32Lib](https://github.com/bitluni/ESP32Lib)
+- AY emulation from Alexander Sashnov's libayemu
+- the PS/2 driver from Fabrizio di Vittorio's [FabGL](https://github.com/fdivitto/FabGL)
+
+**ESP2068** turns ESPectrum into a Timex/Sinclair 2068. It adds the SCLD and its screen modes, the HOME/DOCK/EXROM memory map, the AY on the 2068's ports, and `.DCK` cartridges. This project adds the TS-Pico link and native disk commands on top of that.
+
+The plan started out on another board. Draft 1 targeted the Olimex RP2350pc, which would have run the TS-Pico firmware on the same chip as the emulator. Draft 2 moved to the ESP32-SBC-FabGL, the board actually on hand, and to ESPectrum. A classic ESP32 has no room for the firmware, so draft 2 moves it to a separate Pico.
 
 ## How it fits together
 
@@ -32,8 +49,6 @@ Done outside the phases:
 |---|---|
 | [PLAN.md](PLAN.md) | The project plan: board, architecture, phases and gates, open questions, risks |
 | [DISK_PROPOSAL.md](DISK_PROPOSAL.md) | Native disk commands for ESP2068: design, behaviour and phases |
-| [bringup/](bringup/) | A pico-sdk bring-up program for the **Olimex RP2350pc**, the target in draft 1 of the plan. It checks HDMI, PSRAM, SD, USB keyboard and audio. See its [README](bringup/README.md). |
-| [tools/make_font.py](tools/make_font.py) | Makes `bringup/font8x8.h` from the character set in a TS2068 ROM |
 
 ## Related projects
 
@@ -44,8 +59,4 @@ Done outside the phases:
 
 ## License
 
-MIT; see [LICENSE](LICENSE). Some files carry their own licenses:
-- `bringup/pico_sdk_import.cmake` and `bringup/boards/olimex_rp2350pc.h` are BSD-3-Clause (Raspberry Pi), and `bringup/dvi.c` is based on BSD-3-Clause pico-examples code. Their notices are kept in the files.
-- `bringup/font8x8.h` is generated from the TS-Pico ROM, which is MIT.
-
-ESP2068 and the emulators it builds on (ESPectrum, FabGL) are GPL-3. This MIT license doesn't cover them.
+GNU General Public License v3.0; see [LICENSE](LICENSE). That's the license of ESPectrum and ESP2068, which this project is based on.
