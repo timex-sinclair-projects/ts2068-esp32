@@ -29,6 +29,7 @@
 #include "Tape.h"
 #include "ESPConfig.h"
 #include "FileUtils.h"
+#include "SCLD.h"
 #include "OSDMain.h"
 #include "messages.h"
 
@@ -1152,6 +1153,44 @@ IRAM_ATTR void Z80::exec_nocheck() {
         uint8_t pg = REG_PCh >> 6;
         VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
         opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+
+        regR++;
+        REG_PC++;
+
+        if (prefixOpcode == 0) {
+            flagQ = pendingEI = false;
+            dcOpcode[opCode]();
+            lastFlagQ = flagQ;
+            continue;
+        }
+
+        if (prefixOpcode == 0xDD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIX);
+        } else if (prefixOpcode == 0xED) {
+            prefixOpcode = 0;
+            decodeED();
+        } else if (prefixOpcode == 0xFD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIY);
+        } else continue;
+
+        if (prefixOpcode == 0) lastFlagQ = flagQ;
+
+    }
+
+}
+
+// TS2068 version of exec_nocheck(): opcodes come from the SCLD's 8K chunks.
+// VIDEO::Draw_Opcode is always Blank_Opcode for the 2068 (no contention, and
+// RenderFrame2068 draws the whole frame at once), so its 4 T-states are
+// added here directly instead of through the function pointer.
+IRAM_ATTR void Z80::exec_nocheck_2068() {
+
+    while (CPU::tstates < CPU::stFrame) {
+
+        CPU::tstates += 4;
+        opCode = SCLD::memChunk[REG_PCh >> 5][REG_PC & 0x1fff];
 
         regR++;
         REG_PC++;

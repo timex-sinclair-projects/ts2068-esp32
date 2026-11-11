@@ -280,9 +280,8 @@ IRAM_ATTR void CPU::loop() {
             Z80::exec_nocheck_2A3();
         else if (Z80Ops::is2068)
             // exec_nocheck() fetches straight from MemESP::ramCurrent, which
-            // the TS2068 doesn't use; execute() goes through fetchOpcode_2068.
-            // HALT ends this loop by zeroing stFrame, as in exec_nocheck().
-            while (tstates < stFrame) Z80::execute();
+            // the TS2068 doesn't use.
+            Z80::exec_nocheck_2068();
         else
             Z80::exec_nocheck();
         if (stFrame == 0) FlushOnHalt();

@@ -391,6 +391,7 @@ public:
     static void execute();
     static void exec_nocheck();
     static void exec_nocheck_2A3();
+    static void exec_nocheck_2068();
 
     // Check INT
     static void checkINT(void);
