@@ -166,6 +166,26 @@ void SCLD::resolveMemChunks() {
             memChunkReadOnly[c] = (c < 2); // HOME ROM below 0x4000, RAM above
         }
     }
+    if (overlayActive) {
+        memChunk[0] = const_cast<uint8_t*>(overlayImage);
+        memChunk[1] = const_cast<uint8_t*>(overlayImage) + 0x2000;
+        memChunkReadOnly[0] = memChunkReadOnly[1] = true;
+    }
+}
+
+const uint8_t* SCLD::overlayImage = nullptr;
+bool SCLD::overlayActive = false;
+
+void SCLD::setOverlayImage(const uint8_t* image16k) {
+    overlayImage = image16k;
+    if (!image16k && overlayActive) setOverlay(false);
+}
+
+void SCLD::setOverlay(bool on) {
+    if (!overlayImage) on = false;
+    if (on == overlayActive) return;
+    overlayActive = on;
+    resolveMemChunks();
 }
 
 void SCLD::OUT_F4(uint8_t value) {
@@ -192,5 +212,6 @@ uint8_t SCLD::IN_FF() {
 
 void SCLD::reset() {
     mmuSelect = 0x00;
+    overlayActive = false;
     OUT_FF(0x00); // also resolves memChunk[]
 }

@@ -202,8 +202,23 @@ public:
     static const uint16_t DFILE1_BASE = 0x4000; // primary display file
     static const uint16_t DFILE2_BASE = 0x6000; // secondary display file (+0x2000)
 
-    // Power-on/reset state: mmuSelect=0, displayControl=0, all chunks HOME.
+    // Power-on/reset state: mmuSelect=0, displayControl=0, all chunks HOME,
+    // the overlay off.
     static void reset();
+
+    // ---- The native disk's DOS ROM overlay (DiskEngine.h) ----
+    // Not 2068 hardware. While on, chunks 0 and 1 show `overlayImage`
+    // (16K, read-only) whatever mmuSelect and exromSelect say; the
+    // registers themselves are untouched, so turning it off puts back
+    // exactly what was there. Without an image, setOverlay() does nothing.
+    static void setOverlayImage(const uint8_t* image16k);
+    static void setOverlay(bool on);
+    static bool overlayOn() { return overlayActive; }
+
+private:
+    static const uint8_t* overlayImage;
+    static bool overlayActive;
+public:
 
 };
 

@@ -47,6 +47,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "DockLoader.h"
 #ifdef ESP2068_TSPICO
 #include "TSPico.h"
+#include "DosDisk.h"
 #include <vector>
 #endif
 #ifdef ESP2068_SERIAL_KEYS
@@ -745,31 +746,45 @@ void ESPectrum::setup() {
         // (Phase 3, PLAN.md) — see RomLoader.h. Missing files are not
         // fatal: HOME ROM stays zeroed placeholder memory (already the
         // case since allocateMemory()), same as if nothing were loaded.
+        // The ROMs and the cartridge live in /2068/rom/, out of reach of
+        // the native disk's ERASE and MOVE; /2068/ itself is still looked
+        // at, where they used to be.
+        auto romFile = [](const char* name) {
+            std::string inRom = std::string("/sd/2068/rom/") + name;
+            if (FILE* f = fopen(inRom.c_str(), "rb")) { fclose(f); return inRom; }
+            return std::string("/sd/2068/") + name;
+        };
         bool romsLoaded = false;
 #ifdef ESP2068_TSPICO
         // The TS-Pico ROM (TSPICO-23.ROM), if it's on the card: 32K, the
         // HOME ROM then a 16K EXROM.
-        if (FILE* f = fopen("/sd/2068/tspico.rom", "rb")) {
+        std::string tspicoPath = romFile("tspico.rom");
+        if (FILE* f = fopen(tspicoPath.c_str(), "rb")) {
             std::vector<uint8_t> rom(32768);
             size_t n = fread(rom.data(), 1, rom.size() + 1, f);
             fclose(f);
             if (n == 32768 && RomLoader::loadHomeRomFromBuffer(rom.data(), 16384)
                            && RomLoader::loadExromFromBuffer(rom.data() + 16384, 16384)) {
-                printf("TS2068: TS-Pico ROM loaded from /sd/2068/tspico.rom\n");
+                printf("TS2068: TS-Pico ROM loaded from %s\n", tspicoPath.c_str());
                 romsLoaded = true;
             } else
-                printf("TS2068: /sd/2068/tspico.rom is not a 32K TS-Pico ROM -- using the stock ROMs\n");
+                printf("TS2068: %s is not a 32K TS-Pico ROM -- using the stock ROMs\n", tspicoPath.c_str());
         }
 #endif
         if (!romsLoaded) {
-            if (!RomLoader::loadHomeRomFromFile(RomLoader::DEFAULT_HOME_ROM_PATH))
-                printf("TS2068: no HOME ROM at %s -- running with a blank ROM\n", RomLoader::DEFAULT_HOME_ROM_PATH);
-            if (!RomLoader::loadExromFromFile(RomLoader::DEFAULT_EXROM_PATH))
-                printf("TS2068: no EXROM at %s -- EXROM chunks will read as an empty socket\n", RomLoader::DEFAULT_EXROM_PATH);
+            std::string homePath = romFile("home.rom"), exromPath = romFile("exrom.rom");
+            if (!RomLoader::loadHomeRomFromFile(homePath))
+                printf("TS2068: no HOME ROM at %s -- running with a blank ROM\n", homePath.c_str());
+            else
+                // The native disk, if this is the stock HOME ROM (DosDisk.h).
+                DosDisk::install();
+            if (!RomLoader::loadExromFromFile(exromPath))
+                printf("TS2068: no EXROM at %s -- EXROM chunks will read as an empty socket\n", exromPath.c_str());
         }
         // A cartridge in the dock, if there is one at the fixed path (no OSD
         // picker yet). The ROM's own start-up finds and enters it.
-        const char* cartPath = "/sd/2068/cart.dck";
+        std::string cartFile = romFile("cart.dck");
+        const char* cartPath = cartFile.c_str();
         FILE* cart = fopen(cartPath, "rb");
         if (cart) {
             fclose(cart);

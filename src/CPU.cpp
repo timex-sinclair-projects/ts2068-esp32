@@ -34,6 +34,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 
 #ifdef ESP2068_TSPICO
 #include "TSPico.h"
+#include "DosDisk.h"
 #endif
 #include "cpuESP.h"
 #include "ESPectrum.h"
@@ -189,6 +190,7 @@ void CPU::reset() {
 #ifdef ESP2068_TSPICO
         TSPico::machineReset();
 #endif
+        DosDisk::machineReset();
         statesInFrame = TSTATES_PER_FRAME_2068;
         IntStart = INT_START2068;
         IntEnd = INT_END2068 + CPU::latetiming;

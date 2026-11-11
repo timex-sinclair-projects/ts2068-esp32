@@ -40,6 +40,8 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "SCLD.h"
 #include "SCLDPrinter.h"
 #include "VirtualDisk.h"
+#include "DosDisk.h"
+#include "DiskEngine.h"
 #ifdef ESP2068_TSPICO
 #include "TSPico.h"
 #endif
@@ -662,6 +664,13 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
                 }
             }
 #endif
+            // The native disk (include/DiskEngine.h): a service call, and
+            // the DOS ROM overlay on and off. Nothing without the DOS ROM.
+            case DiskEngine::PORT_SVC:
+                if (DosDisk::active()) Z80::setRegA(DosDisk::service(data));
+                return;
+            case DiskEngine::PORT_DOS_ON:  SCLD::setOverlay(true);  return;
+            case DiskEngine::PORT_DOS_OFF: SCLD::setOverlay(false); return;
             case 0x00FE: {
                 // Border color / beeper / tape-MIC-out write. Same bit
                 // layout as the Spectrum ULA's port 0xFE write
