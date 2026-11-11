@@ -1,6 +1,6 @@
 /*
 
-ESP2068 -- TS2068 port of ESPectrum
+ts2068-esp32 -- TS2068 port of ESPectrum
 
 DiskEngine.h -- native disk for the TS2068: the engine behind the DOS
 ROM's service calls. New for this port. See DISK_PROPOSAL.md in the

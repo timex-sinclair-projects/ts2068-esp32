@@ -1,4 +1,4 @@
-; ESP2068 -- native disk for the TS2068: the ROM side.
+; ts2068-esp32 -- native disk for the TS2068: the ROM side.
 ;
 ; Assembled three times by tools/build_dos.py, with -DSIDE=n:
 ;

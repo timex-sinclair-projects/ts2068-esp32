@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 TSPico.h — the TS-Pico on the board: ports 0Eh/0Fh go to a TSPicoBus
 (include/TSPicoBus.h) whose link is UART1 on the AccessBus header:
@@ -15,7 +15,7 @@ GPI34/GPI39 have no pull-ups and float with nothing plugged in. The Pico
 drives only the two input-only pins, neither a strapping pin, so it can't
 put the ESP32 into download mode at reset.
 
-Built only with -D ESP2068_TSPICO, which decodes ports 0Eh/0Fh (without
+Built only with -D TS2068_TSPICO, which decodes ports 0Eh/0Fh (without
 it they read FFh and ignore writes). See TSPICO-LINK.md.
 
 */

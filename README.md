@@ -2,7 +2,7 @@
 
 A standalone Timex/Sinclair 2068 with TS-Pico functionality on the **Olimex ESP32-SBC-FabGL** (Rev B): VGA, PS/2 keyboard, microSD and audio on a single board.
 
-The emulator in this repository is **ESP2068**, a TS2068 port of ESPectrum. It used to be a separate repository and was merged in here with its full history, including ESPectrum's.
+The emulator is a TS2068 port of ESPectrum, and this repository carries ESPectrum's full history.
 
 ## History
 
@@ -17,13 +17,11 @@ ESPectrum also brings in:
 - AY emulation from Alexander Sashnov's libayemu
 - the PS/2 driver from Fabrizio di Vittorio's [FabGL](https://github.com/fdivitto/FabGL)
 
-**ESP2068** turns ESPectrum into a Timex/Sinclair 2068. It adds the SCLD and its screen modes, the HOME/DOCK/EXROM memory map, the AY on the 2068's ports, and `.DCK` cartridges. This project adds the TS-Pico link and native disk commands on top of that.
-
-The plan started out on another board. Draft 1 targeted the Olimex RP2350pc, which would have run the TS-Pico firmware on the same chip as the emulator. Draft 2 moved to the ESP32-SBC-FabGL, the board actually on hand, and to ESPectrum. A classic ESP32 has no room for the firmware, so draft 2 moves it to a separate Pico.
+This project turns ESPectrum into a Timex/Sinclair 2068. It adds the SCLD and its screen modes, the HOME/DOCK/EXROM memory map, the AY on the 2068's ports, `.DCK` cartridges, native disk commands and the TS-Pico link.
 
 ## How it fits together
 
-- **The ESP32 runs the emulator.** ESP2068 runs the Z80 on core 0, with VGA video and audio on core 1.
+- **The ESP32 runs the emulator.** The emulator runs the Z80 on core 0, with VGA video and audio on core 1.
 - **A Raspberry Pi Pico runs the real TS-Pico firmware.** The firmware runs unchanged, apart from a new board layer. It connects to the ESP32's second hardware UART on the **AccessBus** header (3 Mbaud, RTS/CTS).
 - **The ESP32 keeps a local mirror of the TS-Pico's bus state**, so a port access doesn't wait for a round trip over the link. The wire protocol is bridge v1 from the TS-Pico emulator bridge, extended as v1.1, so fuse-tspico and zesarux-tspico keep working.
 
@@ -43,7 +41,7 @@ The host tests are in `test/host/`. [CLAUDE.md](CLAUDE.md) and [PLAN.md](PLAN.md
 
 | Phase | State |
 |---|---|
-| 0. ESP2068 on the board | Boots to the copyright screen at full speed. Keyboard and sound are not yet tested. |
+| 0. The emulator on the board | Boots to the copyright screen at full speed. Keyboard and sound are not yet tested. |
 | 1. Emulator side of the TS-Pico link | Gate 1 passed on the board. The link has not been tested with a real Pico yet. |
 | 2. Pico side (in tspico-firmware-build) | Paused while a Pico board for the AccessBus is designed. |
 | 3. Together | Not started. |

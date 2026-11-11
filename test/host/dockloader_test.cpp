@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 test/host/dockloader_test.cpp — standalone, host-compilable test for
 DockLoader (include/DockLoader.h, src/DockLoader.cpp) against slice 4's
@@ -8,7 +8,7 @@ synthetic .DCK fixture. No test framework, no ESP-IDF dependency.
 
 Build and run (from repo root, so the default fixture path resolves):
 
-    g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
+    g++ -std=c++17 -Wall -I include -DTS2068_HOST_TEST \
         test/host/dockloader_test.cpp src/DockLoader.cpp src/SCLD.cpp \
         -o /tmp/dockloader_test \
     && /tmp/dockloader_test
@@ -52,20 +52,20 @@ int main(int argc, char** argv) {
     check(DockLoader::hasAutostart(), "hasAutostart() is true (chunk 0 is present in the DOCK bank)");
     check(DockLoader::autostartMmuSelect() == 0x03,
           "autostartMmuSelect() is 0x03 (chunks 0 and 1, matching the fixture's two present chunks)");
-    // Fixture's chunk 0 starts "ESP2068 ..." -> bytes 2-3 are 'P','2' (0x50,0x32);
-    // little-endian entry point = 0x3250. Mechanical check that
+    // Fixture's chunk 0 starts "TS2068 ..." -> bytes 2-3 are '2','0' (0x32,0x30);
+    // little-endian entry point = 0x3032. Mechanical check that
     // autostartEntryPoint() reads the real header field, not a fixed 0 --
     // see DockLoader.cpp's top comment for why that distinction is the
     // whole point of this fix.
-    check(DockLoader::autostartEntryPoint() == 0x3250,
-          "autostartEntryPoint() reads chunk 0 offset 2-3 (0x3250 for this fixture), not a hardcoded 0");
+    check(DockLoader::autostartEntryPoint() == 0x3032,
+          "autostartEntryPoint() reads chunk 0 offset 2-3 (0x3032 for this fixture), not a hardcoded 0");
 
     // ---- Applying the autostart mask makes the cartridge visible via memChunk[] ----
     printf("\n-- apply autostart mask --\n");
     SCLD::OUT_F4(DockLoader::autostartMmuSelect());
     check(SCLD::memChunk[0] != nullptr && SCLD::memChunk[1] != nullptr,
           "chunks 0 and 1 are non-null after paging in");
-    check(memcmp(SCLD::memChunk[0], "ESP2068 SYNTHETIC TEST FIXTURE", 30) == 0,
+    check(memcmp(SCLD::memChunk[0], "TS2068 SYNTHETIC TEST FIXTURE", 29) == 0,
           "chunk 0 content matches the synthetic RAM marker string");
     check(SCLD::memChunk[1][0] == 0 && SCLD::memChunk[1][5] == 5 && SCLD::memChunk[1][255] == 255,
           "chunk 1 content matches the synthetic ROM byte ramp");

@@ -1,11 +1,11 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 test/host/scldvideo_test.cpp — standalone, host-compilable test for
 SCLDVideo's byte-to-pixel expansion (include/SCLDVideo.h,
 src/SCLDVideo.cpp). No test framework, no ESP-IDF dependency at all (this
-module doesn't need the ESP2068_HOST_TEST allocator-shim convention
+module doesn't need the TS2068_HOST_TEST allocator-shim convention
 SCLD.cpp/DockLoader.cpp use, since it does no allocation).
 
 Build and run:

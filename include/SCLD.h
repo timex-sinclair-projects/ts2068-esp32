@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 SCLD.h — memory-management-unit and display-control register contract
 for the Timex Sinclair 2068's SCLD chip. New for this port; there is no
@@ -49,7 +49,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // neither does memChunk[], since it is never null.
 //
 // SCLD.cpp is written to also compile host-side (outside the ESP-IDF/
-// PlatformIO build) when ESP2068_HOST_TEST is defined, so the exact same
+// PlatformIO build) when TS2068_HOST_TEST is defined, so the exact same
 // resolve logic backs both the firmware and test/host/scld_test.cpp — see
 // PLAN.md Phase 2, slice 1 exit criteria ("a simple host-side harness").
 // ---------------------------------------------------------------------------

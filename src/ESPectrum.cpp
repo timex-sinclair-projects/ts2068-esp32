@@ -45,12 +45,12 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "SCLD.h"
 #include "RomLoader.h"
 #include "DockLoader.h"
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
 #include "TSPico.h"
 #include <vector>
 #endif
 #include "DosDisk.h"
-#ifdef ESP2068_SERIAL_KEYS
+#ifdef TS2068_SERIAL_KEYS
 #include "SerialKeys.h"
 #endif
 #include "cpuESP.h"
@@ -661,10 +661,10 @@ void ESPectrum::setup() {
 
     }
 
-#ifdef ESP2068_SERIAL_KEYS
+#ifdef TS2068_SERIAL_KEYS
     SerialKeys::init();
 #endif
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
     TSPico::init();
 #endif
 
@@ -730,7 +730,7 @@ void ESPectrum::setup() {
     // MEMORY SETUP
     //=======================================================================================
 
-#ifdef ESP2068_FORCE_2068
+#ifdef TS2068_FORCE_2068
     // Hardware bring-up build (pio run -e fabgl2068): there is no OSD menu
     // entry for the TS2068 yet, so boot straight into it.
     Config::arch = "2068";
@@ -755,7 +755,7 @@ void ESPectrum::setup() {
             return std::string("/sd/2068/") + name;
         };
         bool romsLoaded = false;
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
         // The TS-Pico ROM (TSPICO-23.ROM), if it's on the card: 32K, the
         // HOME ROM then a 16K EXROM.
         std::string tspicoPath = romFile("tspico.rom");
@@ -1344,7 +1344,7 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
 
     bool r = false;
 
-#ifdef ESP2068_SERIAL_KEYS
+#ifdef TS2068_SERIAL_KEYS
     SerialKeys::frame(PS2Controller.keyboard(), elapsed);
 #endif
 
@@ -2145,14 +2145,14 @@ for(;;) {
     // Send audioBuffer to pwmaudio
     xQueueSend(audioTaskQueue, &param, portMAX_DELAY);
 
-#ifdef ESP2068_SERIAL_KEYS
+#ifdef TS2068_SERIAL_KEYS
     int64_t cpuStart = esp_timer_get_time();
     CPU::loop();
     SerialKeys::cpuUs = esp_timer_get_time() - cpuStart;
 #else
     CPU::loop();
 #endif
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
     TSPico::frame();
 #endif
     if (Z80Ops::is2068 && DosDisk::frame()) ESPectrum::reset();   // LOAD "x.dck"

@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 DockLoader.cpp — see include/DockLoader.h.
 
@@ -98,7 +98,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <cstring>
 #include <vector>
 
-#ifdef ESP2068_HOST_TEST
+#ifdef TS2068_HOST_TEST
 #include <cstdlib>
 static inline uint8_t* dockloader_alloc8k() { return (uint8_t*) calloc(0x2000, 1); }
 static inline void dockloader_free(uint8_t* p) { free(p); }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESP2068 -- TS2068 port of ESPectrum
+ts2068-esp32 -- TS2068 port of ESPectrum
 
 test/dock/dck_format.py -- shared .DCK (TS2068 Command Cartridge) parser/
 writer used by dck_inspect.py and make_synthetic_dck.py. Not part of the

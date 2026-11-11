@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESP2068 -- TS2068 port of ESPectrum
+ts2068-esp32 -- TS2068 port of ESPectrum
 
 test/dock/make_synthetic_dck.py -- generates a small, purely synthetic
 .DCK fixture for testing the container-format parser (slice 3, not yet
@@ -23,7 +23,7 @@ from dck_format import Chunk, Bank, write, CHUNK_SIZE, BANK_DOCK
 
 
 def marker_chunk():
-    text = b"ESP2068 SYNTHETIC TEST FIXTURE - NOT REAL SOFTWARE - "
+    text = b"TS2068 SYNTHETIC TEST FIXTURE - NOT REAL SOFTWARE - "
     data = (text * (CHUNK_SIZE // len(text) + 1))[:CHUNK_SIZE]
     return data
 

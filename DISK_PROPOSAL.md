@@ -1,4 +1,4 @@
-# Native disk commands for ESP2068: proposal
+# Native disk commands: proposal
 
 Draft 7, 2026-11-11. Decisions from our discussion are in §5. Phases 1-4 are built and passed their gates on the board; §2 describes what was built.
 
@@ -35,7 +35,7 @@ The one exception is a TAP file. `LOAD "name.tap"` mounts it, and later loads an
 - **Formats.** TAP, and native files with a 128-byte +3DOS header. A card can then move between a real TS-Pico and the emulator.
 - **Build tooling.** `build-rom.py` uses a declarative patch list. Each entry has its address and its before and after bytes, and the build fails if the before bytes don't match.
 
-**From ESP2068's own `D:` virtual disk** (to be retired, §5):
+**From the emulator's own `D:` virtual disk** (to be retired, §5):
 - **Hook the tape byte routines.** The idea worth keeping is hooking R_TAPE (EXROM 00FCh) and W_TAPE (0068h). Everything above them then works unchanged: SLVM's name matching, `LINE` autorun, `CODE`, `DATA`, VERIFY, MERGE, and machine code that calls the ROM loader directly.
 - **The C++ TAP scanner** can be reused.
 
@@ -73,7 +73,7 @@ Both exist because a separate chip sits on the bus. Here the "device" is the emu
 - **HOME calls.** `HOMECALL` (HL = the routine) switches back, turns interrupts on in HOME (so `Scroll?` and BREAK work), calls, and switches again.
 - **The syntax pass ends through HOME's CHECK-END (1B44h)**, not a plain RET. A RET there runs the statement loop's run-time code, which jumps to the line in NEWPPC and syntax-checks a program line in place, doubling its hidden numbers. Found on the board in Phase 1.
 
-**Service calls, not a protocol.** One port, with the function in A and the arguments in HL, DE, BC and IX, handled synchronously the way ESP2068's virtual disk already reads registers.
+**Service calls, not a protocol.** One port, with the function in A and the arguments in HL, DE, BC and IX, handled synchronously the way the `D:` virtual disk already reads registers.
 - **What it removes:** no FIFO, no polling, no timeouts.
 - **Port number:** its own, so it doesn't collide with the TS-Pico's 0Eh/0Fh. Both are built into one firmware, and the ROM decides which one is used (§5).
 - **Cost:** the Z80 stalls for the length of an SD operation. That's a few milliseconds; a long COPY stalls longer. Audio may click during big transfers.
@@ -97,7 +97,7 @@ So the BASIC semantics stay in the real ROM, and the ROM side of LOAD and SAVE i
 
 **The ROM image.**
 - **Base:** the stock ROMs the user already has on the card (`/2068/rom/home.rom`, `exrom.rom`). The firmware patches them at boot after checking every patch site, and anchors for the ROM routines the DOS ROM and the hooks call, against the stock bytes. Any other HOME ROM (the TS-Pico ROM) runs unchanged, with the native disk off; an EXROM that doesn't fit leaves the disk commands on but TAP mounting off.
-- **Build:** ESP2068's `tools/build_dos.py` assembles `dos/dos.asm` with sjasmplus three times (the DOS ROM, HOME's side of the switch, the EXROM hooks), checks declarative patch lists in the `build-rom.py` style against both stock ROM pairs, and writes `include/DosRom.h`.
+- **Build:** `tools/build_dos.py` assembles `dos/dos.asm` with sjasmplus three times (the DOS ROM, HOME's side of the switch, the EXROM hooks), checks declarative patch lists in the `build-rom.py` style against both stock ROM pairs, and writes `include/DosRom.h`.
 - **Where it lives:** in the firmware. Nothing extra goes on the card.
 
 ---
@@ -187,7 +187,7 @@ Left out for now:
 **A few new reports, if wanted**, could take ROM space the way TS-Pico added its report T: *No SD card*, *Disk full*. Otherwise those map onto J and 4.
 
 **Later, cheap once the engine exists:**
-- `LOAD "x.dck"` docks a cartridge and resets, using ESP2068's DockLoader.
+- `LOAD "x.dck"` docks a cartridge and resets, using the emulator's DockLoader.
 - `LOAD "x.rom"`.
 - LPRINT/LLIST to a text file and COPY to a BMP, like the TS-Pico's printer capture.
 - TZX, read-only, standard-speed blocks.
@@ -235,7 +235,7 @@ Each phase is tested on the board. The serial keyboard types the commands, and t
      - After `NEW`, the same file opened on another stream.
      - Extra arguments to `OPEN #` were refused at entry with the `?` marker.
 6. **Retire `D:`. Done 2026-11-11; checked on the board.** Removed: VirtualDisk (and its host test), its port 0Eh/0Fh path in Ports.cpp, the `D:` ROM patches and their checks (`patches/*.asm`, `verify_patches.py`, `test_zesarux.py`, `patches/out/`), and `TS2068-VIRTUAL-DISK-PLAN.md`. `patches/base/` keeps the stock ROM pairs `build_dos.py` checks against.
-   - Ports 0Eh/0Fh are now the TS-Pico link's alone. Without `ESP2068_TSPICO`, they read FFh and ignore writes.
+   - Ports 0Eh/0Fh are now the TS-Pico link's alone. Without `TS2068_TSPICO`, they read FFh and ignore writes.
    - Found on the way: `DosDisk.h` was included only inside the TS-Pico `#ifdef`, so the `nopsram` and `psram` builds had failed since Phase 1. All three environments build again.
    - Every host suite passes. On the board: `CAT`, a channel read and `LOAD "hello.bas"` (it ran).
 7. **Extras. Done 2026-11-11; checked on the board, TZX on the host only.** DCK/ROM, TZX, printer capture, the file picker.
@@ -259,7 +259,7 @@ Each phase is tested on the board. The serial keyboard types the commands, and t
 4. **File names:** exactly as typed, with a +3DOS header for the type.
 5. **The card root:** a folder, `/2068/`. The ROMs and `cart.dck` sit there today, which would put them in reach of `ERASE`. **Proposed:** move them to `/2068/rom/` (and the cartridge to `/2068/rom/cart.dck`) when Phase 1 lands.
 6. **TS-Pico:** both built into one firmware, with the ROM deciding. `tspico.rom` boots the TS-Pico ROM and link; the disk ROM boots native disk.
-7. **ESP2068's `D:` virtual disk:** retired (Phase 6). Its TAP-scanning code moves into the new engine.
+7. **The `D:` virtual disk:** retired (Phase 6). Its TAP-scanning code moves into the new engine.
 8. **A mounted TAP is the only target** for LOAD, SAVE, VERIFY and MERGE until it is unmounted, whatever the name.
 9. **`OPEN #` keeps the `f:` prefix,** as on the TS-Pico. Prefixes name devices, leaving room for a network `x:` over Wi-Fi.
 10. **Phase 7's order:** DCK/ROM, TZX, the printer, the picker.

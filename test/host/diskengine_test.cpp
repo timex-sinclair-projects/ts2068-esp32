@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 test/host/diskengine_test.cpp — host test for the native disk, Phases 1
 to 5: DiskEngine's CAT listings, TAP mounting and tape services, native
@@ -10,7 +10,7 @@ and SCLD's DOS ROM overlay.
 
 Build and run (from repo root, after tools/build_dos.py):
 
-    g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
+    g++ -std=c++17 -Wall -I include -DTS2068_HOST_TEST \
         test/host/diskengine_test.cpp src/DiskEngine.cpp src/DiskChannels.cpp src/DosDisk.cpp \
         src/SCLD.cpp src/DockLoader.cpp \
         -o /tmp/diskengine_test \

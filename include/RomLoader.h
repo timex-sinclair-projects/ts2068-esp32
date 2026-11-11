@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 RomLoader.h — loads the TS2068 HOME ROM (16K) and EXROM (8K, or any
 larger whole multiple of 8K up to 64K — see SCLD.cpp's loadExromChunk()
@@ -74,7 +74,7 @@ public:
     // Buffer-based versions (host-testable, no file I/O). loadHomeRom
     // copies into storage SCLD already owns, so it needs no allocation of
     // its own; loadExrom allocates the buffer SCLD ends up owning, so
-    // RomLoader.cpp still carries the same ESP2068_HOST_TEST
+    // RomLoader.cpp still carries the same TS2068_HOST_TEST
     // allocator-shim convention as SCLD.cpp/DockLoader.cpp for that one.
     static bool loadHomeRomFromBuffer(const uint8_t* data, size_t size);
     static bool loadExromFromBuffer(const uint8_t* data, size_t size);

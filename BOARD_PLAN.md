@@ -1,10 +1,8 @@
-# TS2068 + TS-Pico on the Olimex ESP32-SBC-FabGL: Draft Plan
-
-*Draft 2, 2026-11-11. Retargeted from the Olimex RP2350pc (draft 1) to the board actually on hand. For discussion.*
+# TS2068 + TS-Pico on the Olimex ESP32-SBC-FabGL: Plan
 
 The goal is a standalone Timex/Sinclair 2068 with TS-Pico functionality on the **Olimex ESP32-SBC-FabGL** (Rev B). The board has a classic ESP32 with VGA, PS/2 keyboard and mouse, microSD and mono audio.
 
-Draft 1's main idea was to run the real TS-Pico firmware on the emulator's own chip. That doesn't survive the move to a classic ESP32. The plan instead **puts the real firmware on a Raspberry Pi Pico connected by a UART**, and runs the emulator on the ESP32. ts2068-p4 named this as its Gate 1 fallback ("put the firmware on a separate RP2040/RP2350 attached by UART or SPI").
+A classic ESP32 has no room to run the real TS-Pico firmware beside the emulator. The plan instead **puts the real firmware on a Raspberry Pi Pico connected by a UART**, and runs the emulator on the ESP32. ts2068-p4 named this as its Gate 1 fallback ("put the firmware on a separate RP2040/RP2350 attached by UART or SPI").
 
 ---
 
@@ -24,27 +22,18 @@ Draft 1's main idea was to run the real TS-Pico firmware on the emulator's own c
 
 **What runs on it today:** ESPectrum (EremusOne, GPL-3) runs on this board out of the box and detects it automatically. It runs the Z80 on **core 0**, with video (I2S DMA, bitluni's VGA6Bit) and audio (LEDC PWM on GPIO25) on **core 1**. FabGL (GPL-3) supplies its PS/2 driver.
 
-## 2. What already exists: ESP2068
+## 2. The emulator
 
-ESP2068 (546 commits, last 2026-07-11; merged into this repository on 2026-11-11) is a TS2068 port of ESPectrum for exactly this class of board (TTGO VGA32 / SBC-FabGL). According to its CLAUDE.md and PLAN.md:
-
-**What it has:**
+The emulator is a TS2068 port of ESPectrum for this class of board (TTGO VGA32 / SBC-FabGL). ESPectrum supplies the chassis: the Z80 core, the VGA driver, the AY, the PS/2 keyboard, SD and the OSD. The port adds:
 - The SCLD, with ports F4/FF and the 8-chunk memory model, with EXROM chunk-indexed.
 - HOME, DOCK and EXROM, `.DCK` loading and LROS autostart.
-- A 512-column VGA mode for hi-res.
+- All eight SCLD screen modes, including 64-column hi-res.
 - Keyboard on FE, the AY on F5/F6, the printer on FB, border and beeper.
 - ROM loading from SD.
-- 7 host test suites, 143 checks.
-- A "virtual disk": its own ROM patches and protocol, **not** the TS-Pico.
+- Native disk commands on the SD card (DISK_PROPOSAL.md).
+- Host tests in `test/host/`.
 
-**Its gaps:**
-- It has **never run on hardware** ("no ESP32 board in this environment").
-- Dual-screen and hi-colour modes render as standard mode.
-- It has no border rendering and no Timex joysticks.
-- It renders whole frames rather than following the beam, and ignores contention.
-- It uses ESPectrum's Z80_JLS core and its `nopsram` build.
-
-The board you have is what ESP2068 has been waiting for. **The cheapest first step is to flash it and see what works.**
+It still renders whole frames rather than following the beam, ignores contention, and has no Timex joysticks.
 
 ## 3. Where the TS-Pico firmware can run
 
@@ -52,14 +41,14 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 |---|---|
 | **A. MicroPython on the same ESP32** | **Ruled out.** ESPectrum already uses both cores: Z80 on core 0, video and audio on core 1. MicroPython's task wants core 1 too. The firmware needs about 190 KB of heap and 122 KB of bytecode, against about 320 KB of internal SRAM that the emulator also needs. Flash writes (LittleFS) stall PSRAM and cache on this chip as well. |
 | **B. The real firmware on a Pico, over AccessBus UART1** | **Proposed.** The firmware runs natively in MicroPython's rp2 port, as on a real TS-Pico, unchanged except for a new board layer. It needs one Pico (RP2040 or RP2350) and a microSD breakout. |
-| C. Reimplement the TS-Pico in C on the ESP32 | Ruled out, as in ts2068-p4 (D1): about 12.5K lines of behaviour, and two firmwares that drift apart. ESP2068's virtual disk is already a separate protocol of this kind. |
+| C. Reimplement the TS-Pico in C on the ESP32 | Ruled out, as in ts2068-p4 (D1): about 12.5K lines of behaviour, and two firmwares that drift apart. The emulator's old `D:` virtual disk was a separate protocol of this kind. |
 | D. Bridge to `pico_host` on a PC over Wi-Fi | A development aid only, as in ts2068-p4. |
 
 ### 3.1 How option B works
 
 ```
 ┌──────────── ESP32-SBC-FabGL ────────────┐        ┌────────── Pico (RP2040/RP2350) ──────────┐
-│ core 0: Z80 + TS2068 machine (ESP2068)  │        │ MicroPython rp2 + TS-Pico firmware        │
+│ core 0: Z80 + TS2068 machine            │        │ MicroPython rp2 + TS-Pico firmware        │
 │   port 0Eh/0Fh hook ─► bus mirror (C)   │ UART1  │  board_link.py: MQ fed from the UART      │
 │     · local TX FIFO, status byte        │◄──────►│  link.c (C module): framing, TX streaming │
 │     · OUT → frame out, status = BUSY    │ GPIO2→ │  SD card (SPI) with /TAP, /help, slots    │
@@ -94,40 +83,40 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 
 ## 4. Phases and gates
 
-### Phase 0: Bring up ESP2068 on the board
-- Build ESP2068's `nopsram` environment with PlatformIO and flash it over the USB-C port (CH340X). Put the stock TS2068 ROMs on the SD at its fixed paths.
+### Phase 0: Bring up the emulator on the board
+- Build the `nopsram` environment with PlatformIO and flash it over the USB-C port (CH340X). Put the stock TS2068 ROMs on the SD at its fixed paths.
 - Check what works: boot to the TS2068 copyright screen, the PS/2 keyboard, BASIC, the beeper and AY, the VGA mode and hi-res, and DOCK cartridges.
 - Record the results in PLAN.md, and fix what fails there.
 - **Gate 0:** stock TS2068 BASIC runs at full speed with keyboard and sound.
 
 **Status (2026-11-11): boots to a clean copyright screen; keyboard, sound and speed not yet tested (no PS/2 keyboard yet).**
 - The board is an ESP32-D0WD-V3 (rev 3), 4 MB flash, 4 MB of usable PSRAM. The `psram` build is the right base, not `nopsram`.
-- New ESP2068 environment `fabgl2068` (`pio run -e fabgl2068`): the `psram` build plus `-D ESP2068_FORCE_2068`, since nothing else selects the 2068. It needs its own `sdkconfig.fabgl2068` (a copy of `sdkconfig.psram`): PlatformIO reads `sdkconfig.<env>`, and without it PSRAM was off.
+- New environment `fabgl2068` (`pio run -e fabgl2068`): the `psram` build plus `-D TS2068_FORCE_2068`, since nothing else selects the 2068. It needs its own `sdkconfig.fabgl2068` (a copy of `sdkconfig.psram`): PlatformIO reads `sdkconfig.<env>`, and without it PSRAM was off.
 - ROMs: stock `TS2068_U16.BIN` / `TS2068_U20.BIN` from the reference library, at `/2068/home.rom` and `/2068/exrom.rom` on the card.
-- Four bugs fixed in ESP2068 (uncommitted), none visible to the host tests:
+- Five bugs fixed, none visible to the host tests:
   1. ROMs were read before the SD card was mounted (`ESPectrum.cpp`).
   2. VGA line buffers for the 512-wide mode (about 120 KB of internal DMA RAM) didn't fit; the SCLD's 64 KB now goes in PSRAM (`SCLD.cpp`). About 37 KB of internal RAM is left after setup.
   3. `Z80::exec_nocheck()` fetches opcodes from `MemESP::ramCurrent`, bypassing the SCLD; the 2068 now runs through `Z80::execute()` (`CPU.cpp`). This is slower per instruction: check full speed.
   4. `RenderFrame2068` wrote pixels in plain byte order; the I2S DMA wants `x ^ 2` (`Video.cpp`).
   5. The 512-active VGA mode filled the monitor's width: no side borders, 1.25x too wide. Now standard 640x480 timing (the TK 320x240 mode doubled) with the 320x240 2068 frame at 2x and 64-pixel side borders; MemESP's Spectrum pages go to PSRAM in 2068 mode to make room. Confirmed right on the monitor.
-- Serial keyboard (`-D ESP2068_SERIAL_KEYS`, `tools/sendkeys.py` in ESP2068): UART0 bytes become injected key presses. Typing `PRINT "HELLO"` works. Opening the port resets the board (macOS pulses RTS/DTR), so the script waits for boot first. The firmware prints frame timing every 300 frames.
+- Serial keyboard (`-D TS2068_SERIAL_KEYS`, `tools/sendkeys.py`): UART0 bytes become injected key presses. Typing `PRINT "HELLO"` works. Opening the port resets the board (macOS pulses RTS/DTR), so the script waits for boot first. The firmware prints frame timing every 300 frames.
 - **Speed: full speed.** The checked `execute()` loop took about 17,200 us of the 16,639 us frame (3% slow). `Z80::exec_nocheck_2068()` fetches from `SCLD::memChunk[]` directly and adds the 4 T-states inline: about 12,550 us at the copyright screen and 13,320 us running `10 GO TO 10`, so 20% headroom with SCLD memory still in PSRAM. Frames are paced at 60.2 Hz measured (300 frames in about 4.98 s).
 - **Beeper works:** `BEEP 1,0: BEEP 1,7: BEEP 1,12` typed over serial plays three rising notes from the audio jack. (BEEP is extended mode then SYMBOL SHIFT + Z, per the ROM's `SEKEYS` table.)
 - **AY works:** `10 SOUND 7,62;8,15;0,200;1,0` / `20 PAUSE 300` / `RUN` plays a 5-second tone. A direct `SOUND` command only chirps, and that is correct ROM behaviour: the report routine (`0EC8`) writes R7=255, silencing the AY, and while waiting for input the ROM writes R7=64/R14=0/R7=255 every frame. Test AY sound from a running program.
 - Typing over serial: the ROM ignores keys while it stores a line or runs a command, so `sendkeys.py` pauses 0.6 s after each ENTER.
 - **Hi-res works:** `OUT 255,6` shows 64 columns, DFILE1 in the even ones. The odd ones (DFILE2, `$6000`) show the top third filled: that is the function dispatcher the HOME ROM copies from EXROM `$1000` to `$6200`–`$682F` at startup (`LD DE,$6200 / LD BC,$0630 / LDIR`), checked byte for byte on the board. A real 2068 matches: `PRINT PEEK 25088` gives 221 (`$DD`) on the user's machine. Programs that use hi-res move it out first (EXROM `CHNG_VID`).
-- **DOCK cartridges work:** Zebra OS-64 (LROS, from the reference library, wrapped as a `.DCK`) at `/2068/cart.dck` boots to its 64-column screen. Three fixes in ESP2068:
+- **DOCK cartridges work:** Zebra OS-64 (LROS, from the reference library, wrapped as a `.DCK`) at `/2068/cart.dck` boots to its 64-column screen. Three fixes:
   1. Nothing on the board loaded a cartridge: the boot now loads `/sd/2068/cart.dck` if present (no OSD picker yet).
   2. `CPU::reset()` jumped straight to an LROS cartridge's entry point, skipping the ROM's start-up. Removed: as on a real 2068, the HOME ROM starts up, then the EXROM's `EXTINIT` (`BLDSCT` reads the dock header, `NORMSVAR`) enters the cartridge through `GOTO_BANK`.
   3. `DockLoader::unload()`, run before every load, cleared all EXROM chunks, including the system EXROM: the dispatcher copy to `$6200` copied zeros and the machine reset in a loop. It now clears only the chunks the cartridge supplied and restores what a cartridge EXROM chunk replaced. Regression checks in `test/host/dockloader_test.cpp`.
 - Still to check: a real PS/2 keyboard. Phase 0 is otherwise done.
 
 ### Phase 1: Emulator side of the TS-Pico hook
-- Add ports 0Eh/0Fh to ESP2068's `Ports.cpp` `is2068` switch, behind a `TSPicoLink` interface.
+- Add ports 0Eh/0Fh to `Ports.cpp`'s `is2068` switch, behind a `TSPicoLink` interface.
 - Write two back ends:
   - **Loopback replay:** P4's `test/traces` frames, checked offline in a host test.
   - **UART1:** the bus mirror described in §3.1, on GPIO2/34/0/39.
-- Load the 32K `TSPICO-23.ROM`: 16K HOME plus 16K EXROM. ESP2068 already accepts an EXROM of 8K to 64K.
+- Load the 32K `TSPICO-23.ROM`: 16K HOME plus 16K EXROM. The emulator already accepts an EXROM of 8K to 64K.
 - **Gate 1:** the TS-Pico ROM boots, and with no Pico attached it reads "no device" (`IN 0Fh` = FFh, `IN 0Eh` = 00h).
 
 **Phase 1 status (2026-11-11): Gate 1 passed on the board.** The work was done on branch `tspico-link`, since merged into `main`.
@@ -135,7 +124,7 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 **Code:**
 - `TSPicoBus` is the bus mirror, written as pure, host-tested C++.
 - `TSPicoUart.cpp` is the UART1 back end.
-- The build flag `ESP2068_TSPICO` is on in `fabgl2068`. It gives ports 0Eh/0Fh to the TS-Pico instead of ESP2068's own VirtualDisk, since the two can't share them.
+- The build flag `TS2068_TSPICO` is on in `fabgl2068`. It gives ports 0Eh/0Fh to the TS-Pico instead of the emulator's own VirtualDisk, since the two can't share them.
 
 **Protocol:** [`TSPICO-LINK.md`](TSPICO-LINK.md) defines bridge v1.1, including what the Pico side must do in Phase 2. In outline:
 - **Emulator to Pico:** bridge-v1 frames for the Z80's writes, plus op 1 acking each byte taken and op 5 for an underrun.
@@ -173,7 +162,7 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 ### Phase 4: Finish
 - Add OSD entries for the TS-Pico (status, reset the Pico, choose a ROM).
 - Write a wiring guide and a small adapter: a Pico, a microSD socket and an AccessBus plug.
-- Do releases (ESP2068 image, Pico UF2, SD zip).
+- Do releases (ESP32 image, Pico UF2, SD zip).
 - Send `board_link` upstream.
 
 ---
@@ -197,7 +186,7 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 - **Independent redraw:** `tools/check_screen.py` redraws the frame from the memory by FUSE's rules and compares pixel for pixel.
 - **Results on the board:** all nine shots match on all 153,600 pixels. They covered modes 0–7 (`OUT 255,n`) and mode 6 with hi-res colour 3.
 
-**Open:** FUSE draws hi-res ink and paper BRIGHT; ESP2068 draws them normal. Real hardware decides.
+**Open:** FUSE draws hi-res ink and paper BRIGHT; the emulator draws them normal. Real hardware decides.
 
 **Native disk (DISK_PROPOSAL.md): Phases 1-7 done 2026-11-11, gates passed on the board.**
 - Bare `CAT` lists `/2068/` on the card; ordinary BASIC, and a program using `CAT`, run as before.
@@ -214,29 +203,20 @@ The board you have is what ESP2068 has been waiting for. **The cheapest first st
 
 ## 5. Questions to settle together
 
-1. **Where should the code live?** Settled 2026-11-11: the emulator (ESP2068) was merged into this repository with its full history, and this repository supersedes the separate ESP2068 repo. The Pico side still belongs in tspico-firmware-build.
+1. **Where should the code live?** Settled: the emulator is in this repository. The Pico side belongs in tspico-firmware-build.
 2. **One SD card or two?**
    - The Pico's card holds the TAPs, as on a real TS-Pico. The ESP32 can fetch the ROM from the Pico, so it needs no card.
    - Or the ESP32 keeps its own card for ROMs and snapshots.
    - I lean to one card, on the Pico.
 3. **Which Pico?** RP2040 (the v2 firmware's home) or RP2350 (the v3 firmware's home, with more RAM)? Do you have the parts, a Pico and a microSD breakout? Your `Pico-2-Universal-Board` folder suggests you might.
-4. **Which emulator base?**
-   - **ESP2068**, which already exists, uses ESPectrum's Z80_JLS (GPL-3), and is untested on hardware.
-   - Or move the **Fuse-derived machine from ts2068-p4** (Fuse core, GPL-2+, beam-following, matched against Fuse) onto ESPectrum's chassis.
-   - I'd start with ESP2068 because it's further along, and swap in the Fuse machine later only if accuracy needs it.
+4. **Which emulator base?** Settled: ESPectrum's, with its Z80_JLS core. The **Fuse-derived machine from ts2068-p4** (Fuse core, GPL-2+, beam-following) can be swapped in later if accuracy needs it.
 5. **What about the mouse port?** Leave it for the mouse, or free GPIO26/27 (for example for a TS2068 joystick or a second UART)?
-6. **What happens to the RP2350pc work?** Settled 2026-11-11: removed. The untested Phase 0 bring-up (`bringup/`, with `tools/make_font.py`) is kept in git history at commit `1f2a33d`.
 
 ## 6. Risks
 
 | Risk | Mitigation |
 |---|---|
-| ESP2068 doesn't boot on hardware | It's the first thing tested (Phase 0). ESPectrum itself is known to work on this board, so start from a stock ESPectrum build if needed |
 | Link stalls make LOAD slow or break timing | Local bus mirror, TX streaming ahead of demand, and RTS/CTS. Measure in Phase 3 |
 | Power and current from the AccessBus 5V for the Pico and its SD | Measure. The board's MT3608 boost should manage a Pico (about 25 mA) plus an SD card (up to about 100 mA) |
 | Upstream doesn't take `board_link` | Pin the firmware and keep stand-ins, as ts2068-p4 does |
-| Classic ESP32 internal RAM | ESP2068 already targets `nopsram`. Only the mirror's FIFOs (a few KB) are added |
-
-## Appendix: draft 1 (RP2350pc)
-
-Draft 1 targeted the Olimex RP2350pc. On that board the TS-Pico v3 firmware could run on core 0 beside the emulator on core 1, the way the v3 card runs `tsbus`. A Phase 0 bring-up for it was written (since removed; see commit `1f2a33d`): HSTX DVI with a 524/525-line switch, PSRAM on GPIO8, PWM audio, SD over SPI1 and USB host. It built with pico-sdk 2.2.0 and was never tested on hardware.
+| Classic ESP32 internal RAM | About 37 KB is left after setup (Phase 0). Only the mirror's FIFOs (a few KB) are added |

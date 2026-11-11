@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 SCLDVideo.h — pixel-expansion core for the TS2068's SCLD display modes.
 New for this port; there is no upstream ESPectrum equivalent.

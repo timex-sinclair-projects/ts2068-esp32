@@ -41,7 +41,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 #include "SCLDPrinter.h"
 #include "DosDisk.h"
 #include "DiskEngine.h"
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
 #include "TSPico.h"
 #endif
 #include "Video.h"
@@ -318,7 +318,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
                 // don't hang) without persisting any printed image
                 // anywhere yet -- see SCLDPrinter.h's header comment.
                 return SCLDPrinter::read(CPU::global_tstates + CPU::tstates);
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
             case 0x000E:
             case 0x000F:
                 // The TS-Pico, mirrored locally; see include/TSPico.h.
@@ -583,7 +583,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
             // see the matching read case in Ports::input() and
             // SCLDPrinter.h for the protocol this implements.
             case 0x00FB: SCLDPrinter::write(data, CPU::global_tstates + CPU::tstates); return;
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
             case 0x000E:
             case 0x000F:
                 // The TS-Pico, mirrored locally; see include/TSPico.h.

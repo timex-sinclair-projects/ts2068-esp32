@@ -32,7 +32,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com
 
 */
 
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
 #include "TSPico.h"
 #endif
 #include "DosDisk.h"
@@ -186,7 +186,7 @@ void CPU::reset() {
         Z80Ops::isPentagon = false;
         Z80Ops::is2a3 = false;
         Z80Ops::is2068 = true;
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
         TSPico::machineReset();
 #endif
         DosDisk::machineReset();

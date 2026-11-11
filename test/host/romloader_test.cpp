@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 test/host/romloader_test.cpp — standalone, host-compilable test for
 RomLoader (include/RomLoader.h, src/RomLoader.cpp). No test framework,
@@ -32,7 +32,7 @@ Two parts:
 Build and run (from repo root, so the default reference-library path
 resolves):
 
-    g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
+    g++ -std=c++17 -Wall -I include -DTS2068_HOST_TEST \
         test/host/romloader_test.cpp src/RomLoader.cpp src/SCLD.cpp \
         -o /tmp/romloader_test \
     && /tmp/romloader_test

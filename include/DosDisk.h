@@ -1,6 +1,6 @@
 /*
 
-ESP2068 -- TS2068 port of ESPectrum
+ts2068-esp32 -- TS2068 port of ESPectrum
 
 DosDisk.h -- the native disk's firmware glue: puts the DOS patches into
 the HOME and EXROM ROMs at boot, gives SCLD the DOS ROM to overlay, and turns

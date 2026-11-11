@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 SCLDPrinter.h — port 0xFB (the TS 2040/ZX-Printer-compatible stylus
 printer) status/timing protocol. New for this port; there is no
@@ -35,7 +35,7 @@ Also deliberately out of scope: this always behaves as if a working
 printer is attached and responding (idle at boot, i.e. motor off,
 exactly like real hardware powers up) — never the "no printer
 attached" `0xff` sentinel FUSE can return when its own optional
-capture setting is off. ESP2068 has no config surface for "user chose
+capture setting is off. The emulator has no config surface for "user chose
 not to attach a printer," and the task is to make the port work, not
 to model its absence.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Type on the TS2068 over the USB serial port (firmware built with
--D ESP2068_SERIAL_KEYS; see include/SerialKeys.h).
+-D TS2068_SERIAL_KEYS; see include/SerialKeys.h).
 
 Keys are 2068 keystrokes, not text: in K mode "p" is PRINT. Braces name
 the keys that have no character:

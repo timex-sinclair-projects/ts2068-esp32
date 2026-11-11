@@ -71,7 +71,7 @@ enum vmodeproperties {
 #define CrtMode_352x272_TV_PENTAGON { 22, 32, 42, 352, 18, 3, 19, 272, 1, 1, 1, 133,235,6,14,7,14 } // 15234 / 48.828125
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// TS2068 MODE (ESP2068 port — no upstream equivalent)
+// TS2068 MODE (this port — no upstream equivalent)
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // One fixed 512-active-column physical mode, used for every TS2068 video
 // mode (see TS2068-ESPECTRUM-PORT-PLAN.md's "Display" section — the 0xFF

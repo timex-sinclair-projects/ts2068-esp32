@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 DockLoader.h — .DCK cartridge container loader (slice 3, PLAN.md Phase 2).
 New for this port; there is no upstream ESPectrum equivalent. Parses the
@@ -57,7 +57,7 @@ public:
     // chunk data — mirrors test/dock/dck_format.py's parse() exactly).
     //
     // Host-testable: no ESP-IDF dependency, works identically under
-    // ESP2068_HOST_TEST (see SCLD.cpp for the same convention).
+    // TS2068_HOST_TEST (see SCLD.cpp for the same convention).
     static bool loadFromBuffer(const uint8_t* data, size_t size);
 
     // Reads fn fully into memory (plain stdio — fopen/fread/fclose, no

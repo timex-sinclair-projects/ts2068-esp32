@@ -1,11 +1,11 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 test/host/scld_test.cpp — standalone, host-compilable unit test for the
 SCLD memory model (include/SCLD.h, src/SCLD.cpp). This is the "simple
 host-side harness" PLAN.md's Phase 2 slice 1 exit criteria calls for: it
-exercises the real SCLD.cpp (built with ESP2068_HOST_TEST so it uses
+exercises the real SCLD.cpp (built with TS2068_HOST_TEST so it uses
 calloc() instead of heap_caps_calloc(), see SCLD.cpp), not a reimplementation
 of it, so a pass here means the actual firmware code resolves memChunk[]
 correctly — outside of src/CPU.cpp's poke8_2068/poke16_2068, which are the
@@ -14,7 +14,7 @@ this test does not re-test (see the note by TEST("write-protect...") below).
 
 No test framework dependency, no ESP-IDF dependency. Build and run:
 
-    g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
+    g++ -std=c++17 -Wall -I include -DTS2068_HOST_TEST \
         test/host/scld_test.cpp src/SCLD.cpp -o /tmp/scld_test \
     && /tmp/scld_test
 

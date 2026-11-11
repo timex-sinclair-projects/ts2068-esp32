@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESP2068 -- TS2068 port of ESPectrum
+ts2068-esp32 -- TS2068 port of ESPectrum
 
 test/dock/test_dck_format.py -- round-trip and error-handling checks for
 dck_format.py. Run: python3 test/dock/test_dck_format.py

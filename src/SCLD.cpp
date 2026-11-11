@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 SCLD.cpp — see include/SCLD.h for the interface contract this implements.
 
@@ -16,7 +16,7 @@ Compiles two ways:
     from internal SRAM via heap_caps_calloc/MALLOC_CAP_8BIT, matching
     MemESP.cpp's existing allocation pattern. Nothing here needs PSRAM,
     per TS2068-ESPECTRUM-PORT-PLAN.md's memory budget.
-  - Host-side, when ESP2068_HOST_TEST is defined (see test/host/), using
+  - Host-side, when TS2068_HOST_TEST is defined (see test/host/), using
     plain calloc() instead — same resolve logic, no ESP-IDF dependency,
     so the unit test in test/host/scld_test.cpp exercises the real code,
     not a reimplementation of it.
@@ -44,7 +44,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <cstddef>
 #include <cstring>
 
-#ifdef ESP2068_HOST_TEST
+#ifdef TS2068_HOST_TEST
 #include <cstdlib>
 static inline uint8_t* scld_alloc8k() { return (uint8_t*) calloc(0x2000, 1); }
 #else

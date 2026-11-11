@@ -1,6 +1,6 @@
 // SerialKeys: a TS2068 keyboard over UART0. See SerialKeys.h.
 
-#ifdef ESP2068_SERIAL_KEYS
+#ifdef TS2068_SERIAL_KEYS
 
 #include "SerialKeys.h"
 

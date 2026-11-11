@@ -1044,7 +1044,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
 
 }
 
-// TS2068 (ESP2068 port). Renders the whole 512x240 physical frame in one
+// TS2068 (this port). Renders the whole 512x240 physical frame in one
 // batch: 24 border lines, 192 active lines, 24 border lines -- see
 // Video.h's declaration and PLAN.md's slice 2 writeup for why this is a
 // separate, much simpler mechanism than the Spectrum machines' Draw/

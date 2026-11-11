@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESP2068 -- TS2068 port of ESPectrum
+ts2068-esp32 -- TS2068 port of ESPectrum
 
 test/dock/dck_inspect.py -- structural inspector for .DCK files. Prints
 the bank/chunk layout without needing to know or care what's inside a

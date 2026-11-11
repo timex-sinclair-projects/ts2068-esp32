@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 test/host/tspico_test.cpp — host test for TSPicoBus (include/TSPicoBus.h),
 the local mirror of the TS-Pico's ports 0Eh/0Fh.
@@ -19,7 +19,7 @@ Two parts:
 
 Build and run (from repo root, so the trace paths resolve):
 
-    g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
+    g++ -std=c++17 -Wall -I include -DTS2068_HOST_TEST \
         test/host/tspico_test.cpp src/TSPicoBus.cpp -o /tmp/tspico_test \
     && /tmp/tspico_test
 

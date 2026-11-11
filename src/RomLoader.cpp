@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 RomLoader.cpp — see include/RomLoader.h.
 
@@ -28,7 +28,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <cstdio>
 #include <cstring>
 
-#ifdef ESP2068_HOST_TEST
+#ifdef TS2068_HOST_TEST
 #include <cstdlib>
 static inline uint8_t* romloader_alloc(size_t size) { return (uint8_t*) calloc(size, 1); }
 #else

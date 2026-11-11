@@ -1,6 +1,6 @@
 /*
 
-ESP2068 — TS2068 port of ESPectrum
+ts2068-esp32 — TS2068 port of ESPectrum
 
 TSPicoBus.h — the TS-Pico's ports 0Eh/0Fh, mirrored locally, with the real
 TS-Pico firmware on a separate Pico at the other end of a serial link.

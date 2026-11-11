@@ -124,7 +124,7 @@ public:
   ///////////////////////////////////////////////////////////////////////////////////////////////////////
   static void EndFrame();
 
-  // TS2068 (ESP2068 port). Called once per frame from CPU::loop() in
+  // TS2068 (this port). Called once per frame from CPU::loop() in
   // place of EndFrame() -- not through the Draw/Draw_Opcode/DrawBorder
   // per-instruction state machine below at all. See SCLDVideo.h and
   // PLAN.md's slice 2 writeup for why: the SCLD has no contention, so

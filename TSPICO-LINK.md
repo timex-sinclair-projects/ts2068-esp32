@@ -1,6 +1,6 @@
 # TS-Pico link: bridge v1.1
 
-How ESP2068 talks to a real TS-Pico firmware running on a separate Pico over a serial link. It extends bridge v1 (`tspico-firmware-build/docs/EMULATOR_BRIDGE.md`). In bridge v1 every Z80 access to ports 0Eh/0Fh is a round trip. That is too slow over a UART, so v1.1 keeps a **mirror** of the bus in the emulator:
+How the emulator talks to a real TS-Pico firmware running on a separate Pico over a serial link. It extends bridge v1 (`tspico-firmware-build/docs/EMULATOR_BRIDGE.md`). In bridge v1 every Z80 access to ports 0Eh/0Fh is a round trip. That is too slow over a UART, so v1.1 keeps a **mirror** of the bus in the emulator:
 
 - The emulator holds the status byte (what `IN 0Fh` reads) and a FIFO of bytes for `IN 0Eh`.
 - The Pico pushes status changes and fills the FIFO ahead of demand.
@@ -12,7 +12,7 @@ Code:
 - `include/TSPico.h`, `src/TSPicoUart.cpp`: UART1 on the board.
 - `src/Ports.cpp`: the port hook.
 
-Everything is built only with `-D ESP2068_TSPICO`, which the `fabgl2068` env sets.
+Everything is built only with `-D TS2068_TSPICO`, which the `fabgl2068` env sets.
 
 ## Wiring (ESP32-SBC-FabGL AccessBus)
 
@@ -99,6 +99,6 @@ The ROM and DOCK image messages for `tpi:boot`, `tpi:dock` and `tpi:zx48` (BOARD
 - **What passes:** all 2,485 and 2,191 frames, every reply matching, with no underruns.
 
 ```bash
-g++ -std=c++17 -Wall -I include -DESP2068_HOST_TEST \
+g++ -std=c++17 -Wall -I include -DTS2068_HOST_TEST \
     test/host/tspico_test.cpp src/TSPicoBus.cpp -o /tmp/tspico_test && /tmp/tspico_test
 ```

@@ -1,6 +1,6 @@
 // TSPico: ports 0Eh/0Fh over UART1 to a Pico. See TSPico.h.
 
-#ifdef ESP2068_TSPICO
+#ifdef TS2068_TSPICO
 
 #include "TSPico.h"
 #include "TSPicoBus.h"

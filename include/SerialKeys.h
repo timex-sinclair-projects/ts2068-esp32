@@ -23,7 +23,7 @@ PRINT, as on the real keyboard.
 Every 300 frames it also prints the emulation time per frame, against the
 2068's 16639 us frame, to show whether the emulator keeps full speed.
 
-tools/sendkeys.py is the host side. Built only with -D ESP2068_SERIAL_KEYS.
+tools/sendkeys.py is the host side. Built only with -D TS2068_SERIAL_KEYS.
 */
 
 #ifndef SerialKeys_h

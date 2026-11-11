@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <cstring>
 
-#ifndef ESP2068_HOST_TEST
+#ifndef TS2068_HOST_TEST
 #include "Z80_JLS/z80.h"
 #include "Z80_JLS/z80operations.h"
 #endif
@@ -24,7 +24,7 @@ bool on = false;
 bool tape = false;
 DiskEngine engine(ROOT);
 
-#ifndef ESP2068_HOST_TEST
+#ifndef TS2068_HOST_TEST
 class Z80Cpu : public DiskCpu {
 public:
     uint16_t bc() override { return Z80::getRegBC(); }
@@ -115,7 +115,7 @@ bool active() { return on; }
 const uint8_t* romImage() { return DosRom::image; }
 
 uint8_t service(uint8_t fn) {
-#ifndef ESP2068_HOST_TEST
+#ifndef TS2068_HOST_TEST
     return engine.service(fn, z80cpu);
 #else
     (void) fn;
