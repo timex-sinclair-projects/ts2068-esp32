@@ -29,6 +29,8 @@ import serial
 
 # The firmware takes 6 frames per key at 60 Hz: about 10 keys a second.
 SECONDS_PER_KEY = 0.11
+# Extra time after ENTER for the ROM to store the line or run the command.
+ENTER_PAUSE = 0.6
 
 NAMED = {
     "ENTER": b"\r",
@@ -104,6 +106,10 @@ def send(s, text):
             continue
         s.write(data)
         drain(s, keys * SECONDS_PER_KEY)
+        if data.endswith(b"\r"):
+            # The ROM ignores keys while it stores a line or runs a
+            # command, and holds only one pending key: give it time.
+            drain(s, ENTER_PAUSE)
 
 
 def interactive(s):
